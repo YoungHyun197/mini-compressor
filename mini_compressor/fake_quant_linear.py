@@ -18,6 +18,7 @@ class FakeQuantLinear(nn.Linear):
         self.register_buffer("weight_scale", None)
         self.register_buffer("weight_zero_point", None)
         self.register_buffer("input_scale", None)
+        self.register_buffer("input_zero_point", None)
 
     @classmethod
     def from_float(cls, module: nn.Linear, scheme: QuantizationScheme) -> "FakeQuantLinear":
@@ -63,9 +64,10 @@ class FakeQuantLinear(nn.Linear):
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
         s = self.input_scale
+        zp = self.input_zero_point if self.input_zero_point is not None else torch.zeros_like(s)
 
-        q = torch.clamp(torch.round(x / s), qmin, qmax)
-        return q * s
+        q = torch.clamp(torch.round(x / s + zp), qmin, qmax)
+        return (q - zp) * s
 
     def _group_fake_quant(
         self,

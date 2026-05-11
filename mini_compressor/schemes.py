@@ -12,6 +12,7 @@ class QuantizationSpec:
     group_size: Optional[int] = None  # per_group일 때만 유효
     axis: Optional[int] = None        # per_channel일 때만 유효, 보통 0
     dynamic: bool = False
+    calibration_method: str = "minmax"  # "minmax" | "percentile" | "mse" | "kl_divergence"
 
 
 @dataclass

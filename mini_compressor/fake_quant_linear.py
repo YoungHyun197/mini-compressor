@@ -3,6 +3,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from .schemes import QuantizationScheme
+from .observer import build_observer, BaseObserver
 
 
 class FakeQuantLinear(nn.Linear):
@@ -20,6 +21,12 @@ class FakeQuantLinear(nn.Linear):
         self.register_buffer("input_scale", None)
         self.register_buffer("input_zero_point", None)
 
+        # calibration 중에만 존재, finalize() 후 None으로 제거 → state_dict 오염 방지
+        if scheme is not None and scheme.activation is not None:
+            self.input_observer: BaseObserver | None = build_observer(scheme.activation.calibration_method)
+        else:
+            self.input_observer = None
+
     @classmethod
     def from_float(cls, module: nn.Linear, scheme: QuantizationScheme) -> "FakeQuantLinear":
         q = cls(module.in_features, module.out_features, module.bias is not None, scheme)
@@ -29,6 +36,8 @@ class FakeQuantLinear(nn.Linear):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         weight = self._fake_quantize_weight(self.weight)
+        if self.input_observer is not None:
+            self.input_observer.update(x)
         if self.scheme is not None and self.scheme.activation is not None and self.input_scale is not None:
             x = self._fake_quantize_activation(x)
         return F.linear(x, weight, self.bias)

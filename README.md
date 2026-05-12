@@ -2,7 +2,7 @@
 
 PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingFace 모델의 W4A16(INT4), W8A8(INT8) 양자화를 one-click API로 수행하고, compressed-tensors 포맷으로 저장·복원합니다.
 
-> **현재 개발 진행 중입니다.** SmoothQuant, GPTQ 등 고급 알고리즘은 구현 예정입니다.
+> **현재 개발 진행 중입니다.** W4A16 RTN, W8A8 static/dynamic이 구현되어 있으며, SmoothQuant·GPTQ 등 고급 알고리즘은 구현 예정입니다.
 
 ---
 
@@ -99,14 +99,33 @@ model = load_pretrained("./qwen3-w8a8")
 
 ## 지원 Scheme
 
-| Scheme | Weight | Activation | 알고리즘 |
-|--------|--------|------------|---------|
-| `w4a16` | INT4, per-group (group\_size=128), symmetric | — | RTN |
-| `w8a8` | INT8, per-channel, symmetric | INT8, per-tensor, asymmetric | MinMax calibration |
+| Scheme | Weight | Activation | Calibration |
+|--------|--------|------------|-------------|
+| `w4a16` | INT4, per-group (group\_size=128), symmetric | — | RTN (불필요) |
+| `w8a8` | INT8, per-channel, symmetric | INT8, per-tensor, asymmetric | MinMax (static) |
+| `w8a8_dynamic` | INT8, per-channel, symmetric | INT8, per-token, symmetric | 불필요 (런타임 계산) |
+
+`w8a8_dynamic` 사용 예시.
+
+```python
+compressor = Compressor.from_scheme("w8a8_dynamic", ignore=["lm_head"])
+compressor.compress(model)  # calibration 데이터 불필요
+```
+
+### QuantizationSpec 두 축 설계
+
+`granularity`와 `dynamic`은 독립적인 두 축입니다.
+
+| 축 | 의미 | 값 |
+|----|------|----|
+| `granularity` | scale이 커버하는 차원 | `"per_tensor"` / `"per_channel"` / `"per_group"` / `"per_token"` |
+| `dynamic` | scale 계산 시점 | `False` (calibration, 정적) / `True` (inference, 동적) |
+
+`per_token + dynamic=True` 조합이 per-token dynamic quantization입니다. 시퀀스 길이가 가변이므로 `per_token`은 실질적으로 `dynamic=True`와 함께 씁니다.
 
 ### Calibration Observer
 
-`QuantizationSpec`의 `calibration_method` 필드로 선택합니다.
+`QuantizationSpec`의 `calibration_method` 필드로 선택합니다. `dynamic=True`인 scheme은 calibration이 필요 없으므로 observer가 생성되지 않습니다.
 
 | 키 | 방식 | 비고 |
 |----|------|------|
@@ -187,11 +206,11 @@ pytest tests/ -v
 
 ### 완료
 
-- [x] Fake quantization (W4A16 RTN, W8A8 MinMax calibration)
+- [x] Fake quantization (W4A16 RTN, W8A8 static, W8A8 dynamic per-token)
 - [x] 4종 calibration observer (MinMax, Percentile, MSE, KL-Divergence)
 - [x] compressed-tensors 호환 save / load + round-trip 일치 확인 (Qwen3-0.6B)
 - [x] Compressor one-click API
-- [x] 단위 테스트 20개, CI 통과
+- [x] 단위 테스트 24개, CI 통과
 
 ### 진행 중
 

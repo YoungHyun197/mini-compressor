@@ -270,3 +270,51 @@ def initialize(self, compute_scales: bool = True) -> None:
 - 압축 흐름: `modifier.initialize()` (기본값 True, 기존 동작 그대로)
 - load 흐름: `modifier.initialize(compute_scales=False)` (구조만, scale은 state_dict에서 채움)
 - llm-compressor, Quark 모두 구조 생성과 scale 로딩을 분리하는 동일 패턴 사용
+
+---
+
+## per-token dynamic quantization 설계 결정 (2026-05-12)
+
+### 17. granularity와 dynamic — 두 축 분리 설계
+
+**배경**: per-token dynamic quantization 구현 시 "granularity에 per_token을 추가" vs "`dynamic=True`로만 표현" 중 선택.
+
+**결정**: llm-compressor(compressed-tensors), AMD Quark와 동일하게 **두 축 분리**로 설계.
+
+- `granularity` = scale이 커버하는 *공간적 차원* (per_tensor / per_channel / per_group / per_token)
+- `dynamic` = scale 계산 *시점* (False: calibration 정적 / True: inference 동적)
+
+**이유**: 두 개념이 독립적이기 때문.
+- `dynamic=True`만 있으면 per-tensor dynamic인지 per-token dynamic인지 표현 불가
+- `per_token` granularity만 있으면 정적/동적 여부를 표현 불가 (per_token은 시퀀스 길이 가변 → 사실상 dynamic과 묶임)
+
+**외부 인터페이스**: 두 축 조합은 verbosity가 높으므로 preset으로 노출.
+```python
+W8A8_DYNAMIC = QuantizationScheme(
+    weight=QuantizationSpec(granularity="per_channel", ...),
+    activation=QuantizationSpec(granularity="per_token", dynamic=True, ...),
+)
+Compressor.from_scheme("w8a8_dynamic")  # 사용자는 preset만 알면 됨
+```
+
+### 18. dynamic=True 시 observer 미생성 및 calibrate() early return
+
+`dynamic=True`인 scheme은 calibration이 필요 없으므로:
+- `FakeQuantLinear.__init__`: `scheme.activation.dynamic`이 True이면 observer 생성하지 않음
+- `modifier.calibrate()`: `scheme.activation.dynamic`이 True이면 early return
+- `FakeQuantLinear.forward()`: `is_dynamic=True`이면 `input_scale` 없어도 `_fake_quantize_activation()` 호출
+
+scale 계산 위치 — `_fake_quantize_activation()` 내부에서 분기:
+```python
+if spec.dynamic:
+    if spec.granularity == "per_token":
+        s = x.detach().abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / qmax
+    else:  # per_tensor dynamic
+        s = x.detach().abs().amax().clamp(min=1e-8) / qmax
+    zp = torch.zeros_like(s)  # dynamic은 symmetric → zero_point=0
+else:
+    s = self.input_scale  # static: calibration에서 사전 계산
+    zp = self.input_zero_point or zeros_like(s)
+```
+
+dynamic은 symmetric=True로 강제 — min/max 두 값 계산 오버헤드를 피하고, 하드웨어 최적화와 정렬.

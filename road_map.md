@@ -304,11 +304,11 @@ from typing import Optional
 class QuantizationSpec:
     num_bits: int
     symmetric: bool
-    granularity: str  # "per_tensor", "per_channel", "per_group"
+    granularity: str  # "per_tensor", "per_channel", "per_group", "per_token"
     dtype: str        # "int", "float"
     group_size: Optional[int] = None
     axis: Optional[int] = None
-    dynamic: bool = False
+    dynamic: bool = False  # True: 런타임 scale 계산 (calibration 불필요)
 
 @dataclass
 class QuantizationScheme:
@@ -355,6 +355,20 @@ W4A16 = QuantizationScheme(
     activation=None,
 )
 ```
+
+### W8A8_DYNAMIC 예시
+
+```python
+W8A8_DYNAMIC = QuantizationScheme(
+    name="w8a8_dynamic",
+    weight=QuantizationSpec(num_bits=8, symmetric=True, granularity="per_channel", dtype="int", axis=0),
+    activation=QuantizationSpec(num_bits=8, symmetric=True, granularity="per_token", dtype="int", dynamic=True),
+)
+```
+
+`granularity`(공간 차원)와 `dynamic`(계산 시점)은 독립 축. `per_token + dynamic=True` 조합이 per-token dynamic quantization.
+- `dynamic=True`: `FakeQuantLinear.forward()`에서 런타임 scale 계산, observer 미생성, calibrate() early return
+- `per_token`: `x.abs().amax(dim=-1, keepdim=True)` — 토큰(마지막 dim 제외)마다 개별 scale
 
 새 scheme 추가 시 설명:
 

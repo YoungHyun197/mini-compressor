@@ -294,12 +294,26 @@ Compressor.from_scheme() → generate → save → lm-eval 전체 flow 재현
 
 ---
 
+## Known Limitations (미지원 기능)
+
+| 기능 | 상태 | 비고 |
+|------|------|------|
+| per-token dynamic quantization | **구현 완료** | `W8A8_DYNAMIC` preset — `granularity="per_token"` + `dynamic=True`. 런타임에 토큰별 scale 계산, calibration 불필요 |
+| real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
+| SmoothQuant | stub만 존재 | `QuantizationModifier.smooth()` — NotImplementedError |
+| GPTQ | 미구현 | stub도 없음 |
+| Sequential calibration | stub만 존재 | `calibrate(sequential=True)` — NotImplementedError |
+| Multi-model 검증 | 미진행 | Qwen3-0.6B 외 LLaMA 등 미확인 |
+
+---
+
 ## 현재 작업 위치
 
-> **Milestone 1–5 + M7 완료** — observer, modifier, test suite, W8A8 e2e generate 모두 완료
+> **Milestone 1–8 + README 완료**
 
 **다음 할 일.**
-1. Milestone 6: W4A16 RTN end-to-end generate 확인
+1. Milestone 6-A: SmoothQuant 구현
+2. Milestone 11: lm-eval perplexity 측정
 
 ---
 

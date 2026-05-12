@@ -7,11 +7,11 @@ from typing import Optional
 class QuantizationSpec:
     num_bits: int
     symmetric: bool
-    granularity: str        # "per_tensor" | "per_channel" | "per_group"
+    granularity: str        # "per_tensor" | "per_channel" | "per_group" | "per_token"
     dtype: str              # "int" | "float8"
     group_size: Optional[int] = None  # per_group일 때만 유효
     axis: Optional[int] = None        # per_channel일 때만 유효, 보통 0
-    dynamic: bool = False
+    dynamic: bool = False             # True: 런타임 scale 계산 (calibration 불필요)
     calibration_method: str = "minmax"  # "minmax" | "percentile" | "mse" | "kl_divergence"
 
 
@@ -53,7 +53,26 @@ W4A16 = QuantizationScheme(
     activation=None,
 )
 
+W8A8_DYNAMIC = QuantizationScheme(
+    name="w8a8_dynamic",
+    weight=QuantizationSpec(
+        num_bits=8,
+        symmetric=True,
+        granularity="per_channel",
+        dtype="int",
+        axis=0,
+    ),
+    activation=QuantizationSpec(
+        num_bits=8,
+        symmetric=True,
+        granularity="per_token",
+        dtype="int",
+        dynamic=True,
+    ),
+)
+
 SCHEME_REGISTRY = {
     "w8a8": W8A8,
     "w4a16": W4A16,
+    "w8a8_dynamic": W8A8_DYNAMIC,
 }

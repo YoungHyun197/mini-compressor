@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from mini_compressor import Compressor
 from mini_compressor.fake_quant_linear import FakeQuantLinear
-from mini_compressor.schemes import W8A8, W4A16
+from mini_compressor.schemes import W8A8, W4A16, W8A8_DYNAMIC
 
 
 class _TinyLM(nn.Module):
@@ -64,6 +64,23 @@ def test_compress_w8a8_with_calibration():
     proj = model.proj
     assert isinstance(proj, FakeQuantLinear)
     assert proj.input_observer is None, "finalize 후 observer는 제거되어야 함"
+
+
+def test_compress_w8a8_dynamic_no_calibration():
+    """W8A8_DYNAMIC는 calibration 데이터 없이도 compress가 완료되어야 한다."""
+    model = _TinyLM()
+    compressor = Compressor.from_scheme("w8a8_dynamic", ignore=["lm_head"])
+    compressor.compress(model)  # dataloader 없이 호출
+
+    proj = model.proj
+    assert isinstance(proj, FakeQuantLinear)
+    assert proj.input_observer is None
+    assert proj.input_scale is None  # dynamic은 런타임 계산 — 사전 scale 없음
+
+    # forward가 정상 동작하는지 확인
+    x = torch.randn(2, 4, 256)
+    out = model(x)
+    assert out.shape == (2, 4, 256)
 
 
 def test_compressor_save_creates_files():

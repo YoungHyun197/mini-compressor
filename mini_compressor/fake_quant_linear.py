@@ -21,8 +21,9 @@ class FakeQuantLinear(nn.Linear):
         self.register_buffer("input_scale", None)
         self.register_buffer("input_zero_point", None)
 
+        # dynamic=True면 런타임 scale 계산 → observer 불필요
         # calibration 중에만 존재, finalize() 후 None으로 제거 → state_dict 오염 방지
-        if scheme is not None and scheme.activation is not None:
+        if scheme is not None and scheme.activation is not None and not scheme.activation.dynamic:
             self.input_observer: BaseObserver | None = build_observer(scheme.activation.calibration_method)
         else:
             self.input_observer = None
@@ -38,8 +39,10 @@ class FakeQuantLinear(nn.Linear):
         weight = self._fake_quantize_weight(self.weight)
         if self.input_observer is not None:
             self.input_observer.update(x)
-        if self.scheme is not None and self.scheme.activation is not None and self.input_scale is not None:
-            x = self._fake_quantize_activation(x)
+        if self.scheme is not None and self.scheme.activation is not None:
+            is_dynamic = self.scheme.activation.dynamic
+            if is_dynamic or self.input_scale is not None:
+                x = self._fake_quantize_activation(x)
         return F.linear(x, weight, self.bias)
 
     def _fake_quantize_weight(self, w: torch.Tensor) -> torch.Tensor:
@@ -66,14 +69,24 @@ class FakeQuantLinear(nn.Linear):
         return (q - zp) * s
 
     def _fake_quantize_activation(self, x: torch.Tensor) -> torch.Tensor:
-        if self.input_scale is None:
-            return x
-
         spec = self.scheme.activation
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
-        s = self.input_scale
-        zp = self.input_zero_point if self.input_zero_point is not None else torch.zeros_like(s)
+
+        if spec.dynamic:
+            # 런타임 scale 계산 — calibration 불필요
+            if spec.granularity == "per_token":
+                # x: (..., seq_len, hidden_dim) → 토큰(마지막 dim 제외)마다 scale
+                s = x.detach().abs().amax(dim=-1, keepdim=True).clamp(min=1e-8) / qmax
+            else:
+                # dynamic per_tensor
+                s = x.detach().abs().amax().clamp(min=1e-8) / qmax
+            zp = torch.zeros_like(s)
+        else:
+            if self.input_scale is None:
+                return x
+            s = self.input_scale
+            zp = self.input_zero_point if self.input_zero_point is not None else torch.zeros_like(s)
 
         q = torch.clamp(torch.round(x / s + zp), qmin, qmax)
         return (q - zp) * s

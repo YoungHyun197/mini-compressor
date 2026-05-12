@@ -17,6 +17,7 @@ _GRANULARITY_TO_STRATEGY = {
     "per_tensor": "tensor",
     "per_channel": "channel",
     "per_group": "group",
+    "per_token": "token",
 }
 
 _STRATEGY_TO_GRANULARITY = {v: k for k, v in _GRANULARITY_TO_STRATEGY.items()}

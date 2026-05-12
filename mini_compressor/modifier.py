@@ -81,7 +81,7 @@ class QuantizationModifier:
                 "Use sequential=False (default) for full-model forward calibration."
             )
 
-        if self.scheme.activation is None:
+        if self.scheme.activation is None or self.scheme.activation.dynamic:
             return
 
         self.model.eval()

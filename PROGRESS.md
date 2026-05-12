@@ -341,6 +341,16 @@ Compressor.from_scheme() → generate → save → lm-eval 전체 flow 재현
 
 ---
 
+## 과제 명세서 가점 요소 현황
+
+| 가점 항목 | 상태 | 비고 |
+|-----------|------|------|
+| serialization 포맷 설계 (quantization config 등) | **완료** | compressed-tensors 포맷 호환 `quantization_config.json`, `save_pretrained`/`load_pretrained` 구현 |
+| HuggingFace Hub model card upload 가능한 구조 | **부분 완료** | 파일 구조는 HF 호환 (safetensors + config.json). model card(README) 생성 유틸리티 미구현 |
+| Multi-GPU 고려 | 미구현 | 설계 고려사항만 기록 (아래 참고) |
+
+---
+
 ## Multi-GPU 가산점 요소
 
 > **구현 전 반드시 별도 논의 후 결정**. 아래는 설계 고려사항만 기록.

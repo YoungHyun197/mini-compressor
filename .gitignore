@@ -48,6 +48,8 @@ build/
 
 # Project-internal: not for submission
 OSS_study/
-road_map.md
-PROGRESS.md
+# road_map.md
+# PROGRESS.md
+# context-notes.md
 reference/
+notebooks/milestone1_model_load.ipynb

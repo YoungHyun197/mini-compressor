@@ -93,6 +93,8 @@ from mini_compressor import load_pretrained
 model = load_pretrained("./qwen3-w8a8")
 ```
 
+`load_pretrained`는 저장 디렉토리의 `config.json`에서 원본 모델 ID(`_name_or_path`)를 읽어 HuggingFace cache 또는 네트워크에서 베이스 모델을 로드한 뒤, `model.safetensors`의 weight와 scale을 주입합니다. **원본 모델이 HF cache에 있거나 네트워크 접근이 가능해야 합니다.**
+
 ---
 
 ## 지원 Scheme

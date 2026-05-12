@@ -85,6 +85,21 @@ compressor.compress(model, dataloader=calib_inputs)
 compressor.save(model, "./qwen3-w8a8", tokenizer=tokenizer)
 ```
 
+### targets — 특정 레이어 타입만 양자화
+
+```python
+# Linear만 양자화하고 싶을 때 (기본값과 동일)
+compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
+
+# 특정 레이어만 지정하고 싶을 때 (fnmatch 패턴 지원)
+compressor = Compressor.from_scheme("w8a8", targets=["model.layers.*.self_attn.*"])
+
+# targets=None (기본값): 모든 nn.Linear 대상
+compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
+```
+
+`targets`와 `ignore`는 독립적으로 동작하며 `ignore`가 우선합니다. `targets=None`이면 모든 `nn.Linear`가 대상입니다.
+
 ### 저장된 모델 불러오기
 
 ```python

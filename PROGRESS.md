@@ -196,11 +196,11 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
   - [x] `quantization_config.json` 별도 저장 (compressed-tensors 포맷)
   - [x] tokenizer 있으면 `tokenizer.save_pretrained(save_dir)`
 - [x] `load_pretrained(save_dir)`
-  - [x] `AutoConfig.from_pretrained(save_dir)` → `config._name_or_path`로 model_id 추출
-  - [x] `AutoModelForCausalLM.from_pretrained(model_id)` — fresh base model
-  - [x] `quantization_config.json` 읽어 scheme, ignore 복원
+  - [x] `quantization_config.json` → scheme, ignore 복원
+  - [x] `AutoModelForCausalLM.from_pretrained(model_id)` — inv_freq dtype 보존용
   - [x] `modifier.initialize(compute_scales=False)` — 구조만 생성
-  - [x] `load_state_dict` — weight + scale buffer 주입
+  - [x] `input_observer = None` — finalize()와 동일 상태로 맞춤 (W8A8 observer 재활성화 방지)
+  - [x] 직접 state 주입 루프 — load_state_dict 미사용 (None buffer skip 문제 우회)
 - [x] `tests/test_serialize.py` 6개 테스트 통과
 
 #### 8-3. compressor.py 구현
@@ -211,11 +211,14 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
 - [x] `Compressor.save(model, save_dir, tokenizer=None)`
 - [x] `tests/test_compressor.py` 5개 테스트 통과
 
-#### 8-4. 검증 (단위 테스트 완료, HF 모델 round-trip은 notebook에서 진행 예정)
+#### 8-4. 검증
 - [x] scheme dict round-trip (W8A8, W4A16)
 - [x] `quantization_config.json` 내용 확인 (calibrated 상태, null input_activations 등)
 - [x] save → safetensors 파일 생성 확인
-- [ ] HF 모델: `compress → save → load → generate` 왕복 테스트 (notebook)
+- [x] HF 모델(Qwen3-0.6B): `compress → save → load → generate` 왕복 일치 확인
+  - W4A16 round-trip: True
+  - W8A8 round-trip: True
+- [x] CI 통과 (`transformers`, `safetensors` pyproject.toml dependencies 추가)
 
 ---
 

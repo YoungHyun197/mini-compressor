@@ -223,14 +223,36 @@ save_pretrained(model, save_dir, tokenizer=None)
 
 # load
 load_pretrained(save_dir)
-# → AutoConfig.from_pretrained(save_dir)로 model_id 꺼냄 (config._name_or_path)
-# → AutoModelForCausalLM.from_pretrained(model_id) 로 base model 생성
-# → quantization_config.json 읽어 scheme, ignore 복원
+# → quantization_config.json → scheme, ignore 복원
+# → AutoModelForCausalLM.from_pretrained(config._name_or_path) — inv_freq dtype 보존 목적
 # → modifier.initialize(compute_scales=False) — 구조만 생성, scale 계산 안함
-# → model.load_state_dict(saved_state_dict) — weight + scale buffer 주입
+# → input_observer = None (W8A8: initialize가 observer를 재생성하므로 명시적 제거)
+# → saved_state 직접 주입 루프 — weight는 data.copy_(), buffer는 _buffers 직접 할당
 ```
 
 llm-compressor의 `_process_model_before_weight_loading()` (구조 생성) / weight 로딩 / `_process_model_after_weight_loading()` 패턴과 동일 철학.
+
+### 14. load_pretrained — load_state_dict 미사용 이유
+
+PyTorch의 `_load_from_state_dict`는 `local_state = {k: v for ... if v is not None}` 필터링으로 None buffer를 건너뜀. `initialize(compute_scales=False)` 후 `weight_scale` 등이 None이므로 `copy_()`가 호출되지 않아 safetensors 값이 주입되지 않음.
+
+해결: `saved_state`를 직접 순회하여 parameter는 `data.copy_()`, buffer는 `mod._buffers[attr] = tensor`로 직접 할당.
+
+### 15. load_pretrained — from_config 대신 from_pretrained 사용 이유
+
+`from_config(hf_config).to(torch.float16)`은 `inv_freq` 같은 `persistent=False` 버퍼를 float16으로 변환. 반면 원본 `from_pretrained(..., torch_dtype=float16)`은 이 버퍼를 float32로 유지 (HF가 non-persistent buffer에 dtype 미적용).
+
+결과: inv_freq에 1.78e-04 오차 발생 → Qwen3-0.6B 28개 attention 레이어를 거쳐 logit max diff 4.19로 증폭. round-trip 실패.
+
+해결: `from_pretrained(model_id, torch_dtype=float16)` 사용. weights는 step 5에서 safetensors로 덮어씌우므로 이중 로딩이지만 dtype 일관성 확보.
+
+### 16. load_pretrained — W8A8 observer 재활성화 문제
+
+`initialize(compute_scales=False)`는 `scheme.activation is not None`이면 MinMaxObserver를 새로 생성. 원본은 `finalize()`가 이미 `input_observer = None`으로 제거한 상태.
+
+결과: 로드된 모델에 observer 서브모듈이 남아 `forward()`에서 `update(x)` 호출 → `min_val`, `max_val` buffer 394개 추가, 연산 흐름 변경.
+
+해결: `initialize(compute_scales=False)` 직후 모든 FQL에 대해 `mod.input_observer = None` 명시적 설정.
 
 ### 13. modifier.initialize() — compute_scales 파라미터 추가
 

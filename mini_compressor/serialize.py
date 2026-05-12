@@ -115,37 +115,54 @@ def load_pretrained(save_dir: str) -> nn.Module:
     """저장된 디렉토리에서 quantized model 복원.
 
     흐름:
-    1. config.json에서 원본 model_id 읽기 (HF가 _name_or_path에 자동 저장)
-    2. base model 생성 (float16)
-    3. quantization_config.json에서 scheme + ignore 복원
-    4. modifier.initialize(compute_scales=False) — 구조만 생성, scale 계산 안 함
-    5. saved state_dict 로드 — weight + scale buffer 주입
+    1. quantization_config.json → scheme + ignore 복원
+    2. from_pretrained(model_id)으로 base model 로드
+       ※ from_pretrained(save_dir) 불가: safetensors에 weight_scale 등 추가 키 존재
+       ※ from_config만 쓰면 inv_freq 등 persistent=False 버퍼가 float32로 초기화되어
+         원본(float16) 대비 1.78e-04 오차 → attention 전 레이어에 걸쳐 logit 4.19 차이
+    3. FakeQuantLinear로 교체 (구조만, scale 계산 안 함)
+    4. safetensors 로드
+    5. weight + scale buffer 직접 주입
+       ※ load_state_dict 미사용: None buffer는 local_state에서 제외되어 copy_() 미호출
     """
-    # 1. 원본 model_id 복원
-    hf_config = AutoConfig.from_pretrained(save_dir)
-    model_id = hf_config._name_or_path
+    from safetensors.torch import load_file
 
-    # 2. base model 생성 (FakeQuantLinear 없는 원본 구조)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_id, torch_dtype=torch.float16
-    )
-
-    # 3. scheme + ignore 복원
+    # 1. scheme + ignore 복원
     config_path = os.path.join(save_dir, QUANT_CONFIG_FILENAME)
     with open(config_path) as f:
         config_dict = json.load(f)
     scheme, ignore = _scheme_from_dict(config_dict)
 
-    # 4. 구조만 생성 (scale은 state_dict에서 채울 것이므로 RTN 계산 생략)
+    # 2. base model 로드 (inv_freq dtype 보존 목적 — from_config + .to() 대신 from_pretrained 사용)
+    hf_config = AutoConfig.from_pretrained(save_dir)
+    model_id = hf_config._name_or_path
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)
+
+    # 3. FakeQuantLinear 구조 생성 (scale 계산 생략)
     modifier = QuantizationModifier(model, scheme, ignore=ignore)
     modifier.initialize(compute_scales=False)
 
-    # 5. saved weight + scale buffer 주입
-    # HF save_pretrained는 safetensors 형식으로 저장함
-    from safetensors.torch import load_file
+    # load 흐름에서는 observer 불필요 — finalize()와 동일 상태로 맞춤
+    from .fake_quant_linear import FakeQuantLinear as _FQL
+    for mod in model.modules():
+        if isinstance(mod, _FQL):
+            mod.input_observer = None
 
-    safetensors_path = os.path.join(save_dir, "model.safetensors")
-    saved_state = load_file(safetensors_path, device="cpu")
-    model.load_state_dict(saved_state)
+    # 4. safetensors 로드
+    saved_state = load_file(os.path.join(save_dir, "model.safetensors"), device="cpu")
+
+    # 5. weight + buffer 전체 직접 주입
+    # load_state_dict 미사용: None buffer는 local_state에서 제외되어 copy_()가 호출되지 않음.
+    # saved_state를 직접 순회하여 parameter는 data.copy_(), buffer는 _buffers 직접 할당.
+    for key, tensor in saved_state.items():
+        parts = key.split(".")
+        mod = model
+        for part in parts[:-1]:
+            mod = getattr(mod, part)
+        attr = parts[-1]
+        if attr in mod._parameters and mod._parameters[attr] is not None:
+            mod._parameters[attr].data.copy_(tensor)
+        elif attr in mod._buffers:
+            mod._buffers[attr] = tensor
 
     return model

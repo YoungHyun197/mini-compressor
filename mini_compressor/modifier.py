@@ -33,8 +33,12 @@ class QuantizationModifier:
             return True
         return any(fnmatch.fnmatch(name, pat) for pat in self.targets)
 
-    def initialize(self) -> None:
-        """nn.Linear → FakeQuantLinear 교체 + weight scale 계산 (RTN)."""
+    def initialize(self, compute_scales: bool = True) -> None:
+        """nn.Linear → FakeQuantLinear 교체.
+
+        compute_scales=True (기본): RTN으로 weight scale 즉시 계산 — 압축 흐름.
+        compute_scales=False: 구조만 생성, scale은 state_dict 로드 후 채움 — load 흐름.
+        """
         to_replace = [
             (name, mod)
             for name, mod in self.model.named_modules()
@@ -43,9 +47,10 @@ class QuantizationModifier:
 
         for name, mod in to_replace:
             fql = FakeQuantLinear.from_float(mod, self.scheme)
-            fql.weight_scale, fql.weight_zero_point = _compute_weight_scale(
-                fql.weight, self.scheme.weight
-            )
+            if compute_scales:
+                fql.weight_scale, fql.weight_zero_point = _compute_weight_scale(
+                    fql.weight, self.scheme.weight
+                )
             *parent_path, attr = name.split(".")
             parent = self.model
             for part in parent_path:

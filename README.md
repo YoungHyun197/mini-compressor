@@ -26,6 +26,8 @@ mini_compressor/
 ├── modifier.py          — initialize → calibrate → finalize 3단계 파이프라인
 ├── compressor.py        — one-click 진입점 (Compressor API)
 └── serialize.py         — save_pretrained / load_pretrained (compressed-tensors 호환)
+
+demo.py                  — W4A16 / W8A8 / W8A8-dynamic 압축·생성·저장 end-to-end 데모
 ```
 
 압축 흐름은 [AMD Quark](https://quark.docs.amd.com/)의 `initialize → calibrate → finalize` 패턴을, 저장 포맷은 [llm-compressor](https://github.com/vllm-project/llm-compressor)의 compressed-tensors 스펙을 따릅니다.
@@ -67,7 +69,7 @@ from mini_compressor import Compressor
 model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B", torch_dtype="float16")
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
-compressor = Compressor.from_scheme("w4a16", ignore=["lm_head"])
+compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
 compressor.compress(model)          # W4A16은 RTN — calibration 데이터 불필요
 compressor.save(model, "./qwen3-w4a16", tokenizer=tokenizer)
 ```
@@ -75,7 +77,7 @@ compressor.save(model, "./qwen3-w4a16", tokenizer=tokenizer)
 ### W8A8 — weight + activation INT8
 
 ```python
-compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
+compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
 
 calib_inputs = [
     tokenizer(text, return_tensors="pt")
@@ -123,7 +125,7 @@ model = load_pretrained("./qwen3-w8a8")
 `w8a8_dynamic` 사용 예시.
 
 ```python
-compressor = Compressor.from_scheme("w8a8_dynamic", ignore=["lm_head"])
+compressor = Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"])
 compressor.compress(model)  # calibration 데이터 불필요
 ```
 
@@ -217,6 +219,24 @@ calibration: W8A8 static은 wikitext-2 train split 128개 샘플 사용.
 
 ---
 
+## 데모 실행
+
+```bash
+# 기본: 세 scheme 압축 후 generate 결과 비교
+python demo.py
+
+# W4A16 저장 + load_pretrained round-trip 확인
+python demo.py --save /tmp/demo_save
+
+# wikitext-2 perplexity 측정 추가 (시간 소요)
+python demo.py --ppl
+
+# 전체 옵션 동시 실행
+python demo.py --save /tmp/demo_save --ppl
+```
+
+---
+
 ## 테스트
 
 ```bash
@@ -240,6 +260,7 @@ pytest tests/ -v
 - [x] 4종 calibration observer (MinMax, Percentile, MSE, KL-Divergence)
 - [x] compressed-tensors 호환 save / load + round-trip 일치 확인 (Qwen3-0.6B)
 - [x] Compressor one-click API
+- [x] End-to-End 데모 (`demo.py`) — 세 scheme compress → generate → save → load 전체 흐름
 - [x] 단위 테스트 24개, CI 통과
 
 ### 진행 중

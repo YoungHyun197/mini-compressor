@@ -201,6 +201,7 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
   - [x] `modifier.initialize(compute_scales=False)` — 구조만 생성
   - [x] `input_observer = None` — finalize()와 동일 상태로 맞춤 (W8A8 observer 재활성화 방지)
   - [x] 직접 state 주입 루프 — load_state_dict 미사용 (None buffer skip 문제 우회)
+  - [x] `base_model_name_or_path`를 `quantization_config.json`에 저장 — `save_pretrained` 후 `config.json`의 `_name_or_path`가 save_dir로 덮어써져 UNEXPECTED key 경고가 뜨는 문제 수정
 - [x] `tests/test_serialize.py` 6개 테스트 통과
 
 #### 8-3. compressor.py 구현
@@ -276,17 +277,18 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 
 ---
 
-### Milestone 12 — End-to-End Demo 노트북
+### Milestone 12 — End-to-End Demo
 ```
-notebooks/demo.ipynb 작성
-Compressor.from_scheme() → generate → save → lm-eval 전체 flow 재현
-노트북 한 파일에서 발표 demo 가능한 상태로 완성
+demo.py 작성
+세 scheme(W4A16 / W8A8 / W8A8-dynamic) compress → generate → save → load 전체 flow
 ```
-- [ ] `notebooks/demo.ipynb` 작성
-- [ ] W8A8: compress → generate → save → reload 전체 flow 확인
-- [ ] W4A16: compress → generate 확인
-- [ ] lm-eval 수치 노트북 내 출력
-- [ ] quantization_config.json 확인 셀 포함
+- [x] `demo.py` 작성
+  - [x] W4A16: compress → generate 확인
+  - [x] W8A8 static: compress (calibration 5샘플) → generate 확인
+  - [x] W8A8 dynamic: compress → generate 확인
+  - [x] `--save DIR`: W4A16 save → load_pretrained → generate round-trip 확인
+  - [x] `--ppl`: wikitext-2 sliding window perplexity 측정
+  - [x] 세 옵션 동시 실행 가능 (`--save DIR --ppl`)
 
 ---
 
@@ -324,11 +326,11 @@ Compressor.from_scheme() → generate → save → lm-eval 전체 flow 재현
 
 ## 현재 작업 위치
 
-> **Milestone 1–8 + README 완료**
+> **Milestone 1–9, 11, 12 완료**
 
 **다음 할 일.**
 1. Milestone 6-A: SmoothQuant 구현
-2. Milestone 11: lm-eval perplexity 측정
+2. Milestone 10: 발표자료 + trade-off 정리
 
 ---
 

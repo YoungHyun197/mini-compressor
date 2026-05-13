@@ -145,7 +145,7 @@ layer 단위 GPU offload calibration
 ```
 변경 파일: `modifier.py` 만
 
-- [ ] `calibrate(sequential=False)` 기본 인터페이스 확정
+- [x] `calibrate(sequential=False)` 기본 인터페이스 확정 (파라미터 추가 + stub)
 - [ ] `_calibrate_sequential()` 구현
   - [ ] embedding 출력까지 CPU 캐시 수집
   - [ ] layer별 GPU 이동 → calibration → CPU offload 루프
@@ -204,7 +204,7 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
 - [x] `tests/test_serialize.py` 6개 테스트 통과
 
 #### 8-3. compressor.py 구현
-- [x] `Compressor.from_scheme(scheme_name, ignore=None)` — SCHEME_REGISTRY 조회
+- [x] `Compressor.from_scheme(scheme_name, targets=None, ignore=None)` — SCHEME_REGISTRY 조회, targets 파라미터 노출
 - [x] `Compressor.compress(model, dataloader, num_samples=None)`
   - [x] `modifier.initialize()` → `modifier.calibrate()` → `modifier.finalize()` 순서 호출
   - [x] model 반환 (in-place 수정이지만 체이닝 가능하도록)
@@ -220,6 +220,19 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
   - W8A8 round-trip: True
 - [x] CI 통과 (`transformers`, `safetensors` pyproject.toml dependencies 추가)
 
+#### 8-5. per-token dynamic quantization 추가
+- [x] `QuantizationSpec.granularity`에 `"per_token"` 추가
+- [x] `W8A8_DYNAMIC` preset — `per_channel` weight + `per_token dynamic` activation
+- [x] `FakeQuantLinear`: dynamic=True 시 observer 미생성, 런타임 scale 계산 분기
+- [x] `modifier.calibrate()`: dynamic scheme early return
+- [x] `serialize.py`: `"per_token" → "token"` granularity 매핑 추가
+- [x] `tests/test_fake_quant_linear.py` 3개 테스트 추가 (observer 미생성, forward, per-token 독립성)
+- [x] `tests/test_compressor.py` 1개 테스트 추가 (dataloader 없이 compress)
+
+#### 8-6. stub 명세
+- [x] `QuantizationModifier.smooth()` — SmoothQuant stub (NotImplementedError + docstring)
+- [x] `calibrate(sequential=True)` — Sequential calibration stub (NotImplementedError + docstring)
+
 ---
 
 ### Milestone 9 — README
@@ -228,7 +241,7 @@ README 작성 (설치법, 실행법, 지원 scheme, 설계 설명, limitation)
 ```
 > save_pretrained / quantization_config.json은 M8에서 완료됨.
 
-- [ ] `README.md` 작성 — 설계 철학 + 사용법 + limitation
+- [x] `README.md` 작성 — 설계 철학 + 사용법 + limitation
 
 ---
 
@@ -251,13 +264,15 @@ lm-eval-harness 연동
 FP baseline 측정 (wikitext-2 perplexity / lambada accuracy)
 W8A8 / W4A16 측정 + 비교 표 → README 반영
 ```
-- [ ] `lm-eval` 설치 및 연동 확인
-- [ ] FP Qwen3-0.6B perplexity 측정 (baseline)
-- [ ] W8A8 RTN perplexity 측정
-- [ ] W4A16 RTN perplexity 측정
+- [x] lm-eval 설치 (`notebooks/milestone11_perplexity.ipynb` 작성 완료)
+- [x] 측정 방식: sliding window perplexity (HF 공식 방식, wikitext-2-raw-v1 test split)
+- [x] FP16 baseline perplexity 측정 — 18.16
+- [x] W4A16 RTN perplexity 측정 — 25.89 (+7.73)
+- [x] W8A8 static perplexity 측정 — 27.75 (+9.59)
+- [x] W8A8 dynamic perplexity 측정 — 18.48 (+0.32)
 - [ ] W8A8 SmoothQuant perplexity 측정 (Milestone 6-A 완료 시)
 - [ ] W4A16 GPTQ perplexity 측정 (Milestone 6-B 완료 시)
-- [ ] 비교 표 README에 추가
+- [x] 비교 표 README에 추가
 
 ---
 

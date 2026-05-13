@@ -190,10 +190,25 @@ save_dir/
 
 ## 검증 결과
 
-`notebooks/milestone8_round_trip.ipynb` — Qwen3-0.6B round-trip 테스트:
+### Perplexity (wikitext-2-raw-v1, Qwen3-0.6B)
+
+| Scheme | PPL | Δ vs FP16 |
+|--------|----:|----------:|
+| FP16 (baseline) | 18.16 | — |
+| W4A16 RTN | 25.89 | +7.73 |
+| W8A8 static | 27.75 | +9.59 |
+| W8A8 dynamic | **18.48** | **+0.32** |
+
+측정 방식: sliding window (stride=512, max\_len=2048), wikitext-2 test split.
+calibration: W8A8 static은 wikitext-2 train split 128개 샘플 사용.
+
+> **W8A8 dynamic이 FP16에 근접한 이유**: 토큰별로 runtime scale을 계산하므로 activation outlier에 영향을 받지 않습니다. W8A8 static의 degradation이 큰 이유는 MinMax observer가 outlier에 의해 per-tensor scale을 넓게 잡기 때문으로, SmoothQuant 적용 시 개선될 것으로 예상됩니다.
+
+### Round-trip 일치 확인 (Qwen3-0.6B)
+
+`notebooks/milestone8_round_trip.ipynb` — compress → save → load → generate 동일 출력 확인:
 
 ```
-[FP]           The key advantage of quantization is that it can reduce the number of bits...
 [W4A16]        The key advantage of quantization is that it can reduce the number of bits needed...
 [W4A16 load]   The key advantage of quantization is that it can reduce the number of bits needed...  ✓ 일치
 [W8A8]         The key advantage of quantization is that it can reduce the number of bits required...

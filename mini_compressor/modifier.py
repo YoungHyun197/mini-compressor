@@ -31,7 +31,11 @@ class QuantizationModifier:
             return False
         if self.targets is None:
             return True
-        return any(fnmatch.fnmatch(name, pat) for pat in self.targets)
+        class_name = type(module).__name__
+        return any(
+            fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(class_name, pat)
+            for pat in self.targets
+        )
 
     def initialize(self, compute_scales: bool = True) -> None:
         """nn.Linear → FakeQuantLinear 교체.

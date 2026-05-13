@@ -109,6 +109,75 @@ class QuantizationModifier:
                 mod.input_scale = scale
                 mod.input_zero_point = zp
 
+    def gptq(
+        self,
+        dataloader: Iterable,
+        num_samples: Optional[int] = None,
+        block_size: int = 128,
+    ) -> None:
+        """GPTQ: Hessian 기반 layer-wise weight 업데이트로 W4A16 정확도 향상.
+
+        Args:
+            dataloader: Hessian 추정에 사용할 캘리브레이션 배치 이터러블.
+            num_samples: 사용할 최대 배치 수.
+            block_size: Cholesky 분해 시 처리할 column 블록 크기. 기본값 128.
+
+        Intended behavior:
+            1. 각 FakeQuantLinear에 forward hook을 등록해 입력 X를 수집한다.
+            2. H = 2 * X^T X (Hessian 근사)를 layer별로 계산한다.
+            3. Cholesky 분해 H = L L^T 후 역행렬을 구한다.
+            4. weight column을 block_size 단위로 순서대로 양자화하면서
+               오차를 남은 column에 전파한다: W[:,j+1:] -= (err * H_inv[j, j+1:])
+            5. 결과 weight를 FakeQuantLinear.weight에 직접 저장한다.
+
+        Note:
+            initialize() 이후, calibrate() 대신 호출한다.
+            RTN calibrate()와 달리 activation scale은 건드리지 않는다.
+            변경 파일: modifier.py 만. FakeQuantLinear, schemes.py, serialize.py 변경 없음.
+
+        Reference:
+            GPTQ: https://arxiv.org/abs/2210.17323
+        """
+        raise NotImplementedError(
+            "GPTQ is not yet implemented. "
+            "Use calibrate() for RTN-based quantization."
+        )
+
+    def awq(
+        self,
+        dataloader: Iterable,
+        alpha: float = 0.5,
+        num_samples: Optional[int] = None,
+    ) -> None:
+        """AWQ: activation magnitude 기반 weight per-channel scaling으로 W4A16 정확도 향상.
+
+        Args:
+            dataloader: activation 통계 수집용 캘리브레이션 배치 이터러블.
+            alpha: scaling 강도 (0.0 = weight만 조정, 1.0 = activation만 조정). 기본값 0.5.
+            num_samples: 통계 수집에 사용할 최대 배치 수.
+
+        Intended behavior:
+            1. 각 FakeQuantLinear 입력의 channel-wise activation magnitude를 수집한다:
+               s_x = mean(|X|) per input-channel (calibration data 평균)
+            2. per-channel scaling factor를 계산한다:
+               s = s_x^alpha  (SmoothQuant와 달리 weight 분포는 고려하지 않음)
+            3. weight에 s를 흡수한다: linear.weight *= diag(s)
+            4. 직전 LayerNorm / embedding에 s^-1 을 흡수해 등가 변환을 유지한다.
+            5. 이후 RTN calibrate()와 동일 경로로 진행한다.
+
+        Note:
+            SmoothQuant와 달리 activation의 salient channel을 보호하는 방향으로 설계된다.
+            smooth()와 동일하게 initialize() 이후, calibrate() 이전에 호출한다.
+            변경 파일: modifier.py 만.
+
+        Reference:
+            AWQ: https://arxiv.org/abs/2306.00978
+        """
+        raise NotImplementedError(
+            "AWQ is not yet implemented. "
+            "Use smooth() for SmoothQuant or calibrate() for standard RTN."
+        )
+
     def smooth(
         self,
         dataloader: Iterable,

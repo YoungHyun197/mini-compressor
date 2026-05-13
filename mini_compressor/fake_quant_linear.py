@@ -50,6 +50,19 @@ class FakeQuantLinear(nn.Linear):
             return w
 
         spec = self.scheme.weight
+
+        if spec.dtype == "float8":
+            # float8 (E4M3 / E5M2) fake quant 경로
+            # Intended behavior:
+            #   1. torch.float8_e4m3fn 또는 float8_e5m2 dtype으로 cast
+            #   2. scale을 곱해 원래 range로 복원 (fake quant 시뮬레이션)
+            #   3. PyTorch >= 2.1 + Hopper GPU(H100) 필요
+            # Reference: https://arxiv.org/abs/2209.05433 (FP8 Formats for Deep Learning)
+            raise NotImplementedError(
+                "float8 weight quantization is not yet implemented. "
+                "Requires PyTorch >= 2.1 and float8_e4m3fn/float8_e5m2 dtype support."
+            )
+
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
         s = self.weight_scale
@@ -70,6 +83,13 @@ class FakeQuantLinear(nn.Linear):
 
     def _fake_quantize_activation(self, x: torch.Tensor) -> torch.Tensor:
         spec = self.scheme.activation
+
+        if spec.dtype == "float8":
+            # float8 activation fake quant 경로 — weight와 동일한 제약 조건 적용
+            raise NotImplementedError(
+                "float8 activation quantization is not yet implemented."
+            )
+
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
 

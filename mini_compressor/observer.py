@@ -20,6 +20,29 @@ class BaseObserver(nn.Module):
     def reset(self) -> None:
         raise NotImplementedError
 
+    def sync(self) -> None:
+        """Multi-GPU 환경에서 observer 통계를 전체 rank에 동기화한다.
+
+        Args:
+            없음. 내부적으로 torch.distributed를 사용한다.
+
+        Intended behavior:
+            - MinMaxObserver: dist.all_reduce(min_val, op=MIN) / all_reduce(max_val, op=MAX)
+            - PercentileObserver: dist.all_gather(self._data) → 전체 rank 분포에서 percentile 계산
+            - MSEObserver: 로컬 grid-search 후 dist.all_reduce(best_loss, op=MIN) 동기화
+            - KLDivergenceObserver: dist.all_reduce(histogram_bins, op=SUM) 후 KL 최소화
+            single-GPU 환경에서는 no-op으로 동작해야 한다.
+
+        Usage:
+            observer.update(x)          # 각 rank에서 local 통계 수집
+            observer.sync()             # 전체 rank 동기화  ← 여기
+            scale, zp = observer.compute_scale_zp(spec)
+        """
+        raise NotImplementedError(
+            "Multi-GPU observer sync is not yet implemented. "
+            "Single-GPU calibration works without calling sync()."
+        )
+
     @staticmethod
     def _scale_zp_from_range(
         min_val: torch.Tensor,

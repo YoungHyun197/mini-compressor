@@ -52,11 +52,46 @@ class Compressor:
         save_dir: str,
         tokenizer=None,
     ) -> None:
-        """compress 완료 후 저장."""
+        """compress 완료 후 로컬 디렉토리에 저장."""
         save_pretrained(
             model,
             save_dir,
             scheme=self.scheme,
             ignore=self.ignore,
             tokenizer=tokenizer,
+        )
+
+    def save_to_hub(
+        self,
+        model: nn.Module,
+        repo_id: str,
+        tokenizer=None,
+        private: bool = True,
+        commit_message: str = "Upload quantized model",
+    ) -> None:
+        """compress 완료 후 HuggingFace Hub에 업로드한다.
+
+        Args:
+            model: compress() 완료된 모델.
+            repo_id: HF Hub 저장소 ID. 예: "username/qwen3-w4a16".
+            tokenizer: 함께 업로드할 tokenizer. None이면 생략.
+            private: True이면 private 저장소로 생성. 기본값 True.
+            commit_message: Hub commit 메시지.
+
+        Intended behavior:
+            1. 임시 디렉토리에 save() 호출 (safetensors + quantization_config.json).
+            2. huggingface_hub.HfApi().upload_folder()로 임시 디렉토리 전체를 업로드한다.
+            3. 임시 디렉토리를 정리한다.
+            모델 파일 구조가 이미 HF 호환이므로 upload_folder 한 번으로 완료된다.
+
+        Note:
+            huggingface_hub 패키지와 HF_TOKEN 환경변수 또는 `huggingface-cli login` 필요.
+
+        Usage:
+            compressor.save_to_hub(model, "username/qwen3-w4a16", tokenizer=tokenizer)
+        """
+        raise NotImplementedError(
+            "save_to_hub is not yet implemented. "
+            "Use save(model, save_dir) to save locally, then upload manually with "
+            "huggingface_hub.upload_folder(repo_id=..., folder_path=save_dir)."
         )

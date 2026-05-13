@@ -101,9 +101,14 @@ def save_pretrained(
     Path(save_dir).mkdir(parents=True, exist_ok=True)
 
     if not torch.distributed.is_initialized() or torch.distributed.get_rank() == 0:
+        # save_pretrained 이전에 읽어야 함 — 호출 후 config.json의 _name_or_path가 save_dir로 덮어써짐
+        model_id = getattr(getattr(model, "config", None), "_name_or_path", None)
+
         model.save_pretrained(save_dir)
 
         config_dict = _scheme_to_dict(scheme, ignore=ignore)
+        if model_id:
+            config_dict["base_model_name_or_path"] = model_id
         config_path = os.path.join(save_dir, QUANT_CONFIG_FILENAME)
         with open(config_path, "w") as f:
             json.dump(config_dict, f, indent=2)
@@ -135,8 +140,13 @@ def load_pretrained(save_dir: str) -> nn.Module:
     scheme, ignore = _scheme_from_dict(config_dict)
 
     # 2. base model 로드 (inv_freq dtype 보존 목적 — from_config + .to() 대신 from_pretrained 사용)
-    hf_config = AutoConfig.from_pretrained(save_dir)
-    model_id = hf_config._name_or_path
+    # quantization_config.json에 원본 model_id가 있으면 우선 사용.
+    # 없으면 config.json의 _name_or_path를 읽는데, save_pretrained 이후엔 save_dir로 덮어써져
+    # from_pretrained(save_dir)가 호출되어 weight_scale 등 추가 키가 UNEXPECTED 경고를 냄.
+    model_id = config_dict.get("base_model_name_or_path")
+    if not model_id:
+        hf_config = AutoConfig.from_pretrained(save_dir)
+        model_id = hf_config._name_or_path
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)
 
     # 3. FakeQuantLinear 구조 생성 (scale 계산 생략)

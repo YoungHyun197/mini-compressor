@@ -8,12 +8,14 @@
 
 ```
 mini_compressor/
-  schemes.py           — QuantizationSpec, QuantizationScheme, W8A8, W4A16, SCHEME_REGISTRY
-  observer.py          — BaseObserver, MinMaxObserver, PercentileObserver, MSEObserver, KLDivergenceObserver
-  fake_quant_linear.py — FakeQuantLinear (nn.Linear 교체 대상)
-  modifier.py          — QuantizationModifier (initialize / calibrate / finalize)
-  compressor.py        — stub (Milestone 8)
-  serialize.py         — stub (Milestone 9)
+  schemes.py           — QuantizationSpec, QuantizationScheme, W8A8/W4A16/W8A8_DYNAMIC, SCHEME_REGISTRY
+  observer.py          — BaseObserver(+sync stub), MinMax/Percentile/MSE/KLDivergence observer
+  fake_quant_linear.py — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
+  modifier.py          — QuantizationModifier (initialize/calibrate/finalize, smooth/gptq/awq stub)
+  compressor.py        — Compressor API (from_scheme/compress/save, save_to_hub stub)
+  serialize.py         — save_pretrained / load_pretrained (compressed-tensors 호환)
+
+demo.py                — W4A16 / W8A8 / W8A8-dynamic end-to-end 데모 (--save, --ppl 옵션)
 ```
 
 ---
@@ -128,8 +130,14 @@ activation: None
 | M2 | (notebook에서 확인) | 완료 |
 | M3 | fake_quant_linear.py (_fake_quantize_*) | 완료 |
 | M4 | schemes.py, fake_quant_linear.py, tests/test_fake_quant_linear.py | 완료 |
-| M5+M7 | observer.py, modifier.py | 완료 (20개 테스트 통과) |
-| M8 | modifier.py, serialize.py, compressor.py, tests/test_serialize.py, tests/test_compressor.py | 완료 (20개 테스트 통과) |
+| M5+M7 | observer.py, modifier.py | 완료 |
+| M8 | modifier.py, serialize.py, compressor.py, tests/ | 완료 |
+| M8-5 | schemes.py(W8A8_DYNAMIC), fake_quant_linear.py(dynamic 분기), modifier.py | 완료 |
+| M9 | README.md | 완료 |
+| M11 | notebooks/milestone11_perplexity.ipynb, README perplexity 표 | 완료 |
+| M12 | demo.py | 완료 |
+
+단위 테스트: 24개 통과 (CI 연동)
 
 ---
 
@@ -147,9 +155,9 @@ M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 
 
 ## 미완료 / 다음 할 일
 
-- [ ] M6-A: SmoothQuant (시간 허락 시)
-- [ ] M6-B: GPTQ (시간 허락 시)
-- [ ] M8: modifier.py 수정 + serialize.py + compressor.py
+- [ ] M6-A: SmoothQuant (`modifier.smooth()` stub → 구현)
+- [ ] M6-B: GPTQ (`modifier.gptq()` stub → 구현)
+- [ ] M13: Multi-GPU — Observer all-reduce, device_map="auto" 호환 검증
 
 ---
 
@@ -318,3 +326,60 @@ else:
 ```
 
 dynamic은 symmetric=True로 강제 — min/max 두 값 계산 오버헤드를 피하고, 하드웨어 최적화와 정렬.
+
+---
+
+## 추가 설계 결정 (2026-05-13)
+
+### 19. targets — 모듈 경로 + 클래스명 양쪽 매칭
+
+**문제**: `targets=["Linear"]` 전달 시 `fnmatch.fnmatch("proj", "Linear")`가 False → 교체 없음.
+
+**원인**: `_should_replace`에서 `name`(모듈 경로, 예: "proj")에만 fnmatch를 적용함.
+
+**결정**: 클래스명(`type(module).__name__`)에도 fnmatch를 적용해 OR 조건으로 처리.
+
+```python
+class_name = type(module).__name__
+return any(
+    fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(class_name, pat)
+    for pat in self.targets
+)
+```
+
+- `targets=["Linear"]` → 클래스명 "Linear" 매칭 → 모든 `nn.Linear` 교체
+- `targets=["model.layers.*.self_attn.*"]` → 경로 패턴 매칭 → 기존 동작 그대로
+- 두 방식이 하나의 targets 리스트에 혼재 가능
+
+### 20. save_pretrained — base_model_name_or_path 저장
+
+**문제**: `model.save_pretrained(save_dir)` 호출 후 HuggingFace가 `config.json`의 `_name_or_path`를 save_dir 절대경로로 덮어씀. 이후 `load_pretrained`에서 `hf_config._name_or_path`를 읽으면 로컬 경로가 반환되어 `from_pretrained(local_path)`가 호출되고, safetensors의 `weight_scale` 등 추가 키를 UNEXPECTED로 경고함.
+
+**결정**: `save_pretrained` 호출 전에 원본 `model_id`를 읽어 `quantization_config.json`에 `base_model_name_or_path` 필드로 저장. `load_pretrained`는 이 필드를 우선 사용하고, 없으면 `hf_config._name_or_path`로 fallback.
+
+```python
+# save 시: model.save_pretrained 전에 읽어야 함
+model_id = getattr(getattr(model, "config", None), "_name_or_path", None)
+# quantization_config.json에 포함
+config_dict["base_model_name_or_path"] = model_id
+
+# load 시
+model_id = config_dict.get("base_model_name_or_path")
+if not model_id:
+    hf_config = AutoConfig.from_pretrained(save_dir)
+    model_id = hf_config._name_or_path
+```
+
+결과: `from_pretrained("Qwen/Qwen3-0.6B")` 로 HF cache에서 로드 → UNEXPECTED 경고 없음.
+
+### 21. stub 확장 목록 (인터페이스 정의 완료, 구현 예정)
+
+| stub | 파일 | 위치 | 설명 |
+|------|------|------|------|
+| `gptq()` | modifier.py | 메서드 | Hessian 기반 W4A16. `calibrate()` 대체 |
+| `awq()` | modifier.py | 메서드 | activation magnitude 기반 W4A16. `smooth()` 와 동일 위치 |
+| `BaseObserver.sync()` | observer.py | 메서드 | multi-GPU all-reduce 자리 표시 |
+| `save_to_hub()` | compressor.py | 메서드 | HF Hub 업로드. 파일 구조가 이미 HF 호환 |
+| float8 경로 | fake_quant_linear.py | 분기 | `spec.dtype == "float8"` 시 NotImplementedError |
+
+모든 stub은 입출력 타입, 의도된 동작, 참고 논문을 docstring에 명세함.

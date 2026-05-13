@@ -277,6 +277,35 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 
 ---
 
+### Milestone 13 — Multi-GPU 지원
+```
+DDP calibration: Observer 통계 all-reduce 동기화
+device_map="auto" 호환 검증 (pipeline parallel)
+rank 0 저장 가드 (serialize.py) — 이미 적용됨
+검증 코드 작성
+```
+
+#### 13-1. DataParallel calibration
+- [x] rank 0 저장 가드 (`serialize.py:103`) — 이미 구현됨
+- [ ] `MinMaxObserver.compute_scale_zp()` 전에 `dist.all_reduce(min_val, op=MIN)` / `all_reduce(max_val, op=MAX)` 추가
+- [ ] `PercentileObserver`: `all_gather` → 전체 통계 수집 후 percentile 계산
+- [ ] `MSEObserver`: 로컬 grid-search 후 `all_reduce(argmin)` 동기화
+- [ ] `KLDivergenceObserver`: `all_reduce(SUM)` on histogram bins
+
+#### 13-2. device_map="auto" 호환
+- [ ] `device_map="auto"` 로드 후 W4A16 compress → generate 동작 확인
+- [ ] scale buffer가 `weight.device`를 따라가는지 검증 (초기 설계 원칙 준수 여부)
+
+#### 13-3. Tensor Parallelism (복잡도 높음, 별도 논의 필요)
+- [ ] shard된 weight에서 scale 계산/merge 방식 결정
+- [ ] 구현 여부는 진행 상황에 따라 판단
+
+#### 13-4. 검증 코드
+- [ ] 2-GPU 환경에서 W8A8 calibrate → observer all-reduce 동기화 확인
+- [ ] `device_map="auto"` round-trip 테스트
+
+---
+
 ### Milestone 12 — End-to-End Demo
 ```
 demo.py 작성
@@ -330,7 +359,8 @@ demo.py 작성
 
 **다음 할 일.**
 1. Milestone 6-A: SmoothQuant 구현
-2. Milestone 10: 발표자료 + trade-off 정리
+2. Milestone 13: Multi-GPU 지원
+3. Milestone 10: 발표자료 + trade-off 정리
 
 ---
 

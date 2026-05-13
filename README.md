@@ -270,6 +270,7 @@ pytest tests/ -v
 - [ ] **SmoothQuant** (`QuantizationModifier.smooth()`) — activation 분포 평탄화로 W8A8 정확도 향상
 - [ ] **Sequential calibration** (`calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
 - [ ] **GPTQ** — Hessian 기반 weight update로 W4A16 정확도 향상 (stub 미작성)
+- [ ] **Multi-GPU 지원** — DDP calibration observer all-reduce 동기화, `device_map="auto"` 호환 검증 (rank 0 저장 가드만 구현됨)
 - [ ] **Multi-model 검증** — LLaMA-3.2-1B 등 다른 아키텍처에서 동작 확인
 - [ ] **lm-eval perplexity 측정** — 알고리즘별 정량 비교
 

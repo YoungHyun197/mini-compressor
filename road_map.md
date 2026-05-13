@@ -1197,9 +1197,7 @@ def calibrate(self, model, dataloader, sequential=False):
 
 ### 13-3. Multi-GPU 지원 (가산점 요소)
 
-**현재 상태: 설계만 명시, 구현 여부는 추후 별도 논의**
-
-구현 전 반드시 "구현할지 여부"를 먼저 논의한다.
+**현재 상태: 구현 목표로 확정 (Milestone 13). rank 0 저장 가드만 구현, 나머지 미구현.**
 
 **고려해야 할 사항:**
 

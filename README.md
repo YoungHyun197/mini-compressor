@@ -268,9 +268,12 @@ pytest tests/ -v
 아래 기능은 인터페이스(stub)만 정의되어 있으며 호출 시 `NotImplementedError`를 발생시킵니다. 각 stub에는 입출력 타입, docstring, 의도된 동작이 명세되어 있습니다.
 
 - [ ] **SmoothQuant** (`QuantizationModifier.smooth()`) — activation 분포 평탄화로 W8A8 정확도 향상
+- [ ] **GPTQ** (`QuantizationModifier.gptq()`) — Hessian 기반 weight update로 W4A16 정확도 향상
+- [ ] **AWQ** (`QuantizationModifier.awq()`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
 - [ ] **Sequential calibration** (`calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
-- [ ] **GPTQ** — Hessian 기반 weight update로 W4A16 정확도 향상 (stub 미작성)
-- [ ] **Multi-GPU 지원** — DDP calibration observer all-reduce 동기화, `device_map="auto"` 호환 검증 (rank 0 저장 가드만 구현됨)
+- [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
+- [ ] **Multi-GPU 지원** — `BaseObserver.sync()` all-reduce 동기화, `device_map="auto"` 호환 검증 (rank 0 저장 가드만 구현됨)
+- [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push
 - [ ] **Multi-model 검증** — LLaMA-3.2-1B 등 다른 아키텍처에서 동작 확인
 - [ ] **lm-eval perplexity 측정** — 알고리즘별 정량 비교
 

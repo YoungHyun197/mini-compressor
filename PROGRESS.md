@@ -346,9 +346,13 @@ demo.py 작성
 |------|------|------|
 | per-token dynamic quantization | **구현 완료** | `W8A8_DYNAMIC` preset — `granularity="per_token"` + `dynamic=True`. 런타임에 토큰별 scale 계산, calibration 불필요 |
 | real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
-| SmoothQuant | stub만 존재 | `QuantizationModifier.smooth()` — NotImplementedError |
-| GPTQ | 미구현 | stub도 없음 |
-| Sequential calibration | stub만 존재 | `calibrate(sequential=True)` — NotImplementedError |
+| SmoothQuant | stub 있음 | `QuantizationModifier.smooth()` — NotImplementedError |
+| GPTQ | stub 있음 | `QuantizationModifier.gptq()` — NotImplementedError |
+| AWQ | stub 있음 | `QuantizationModifier.awq()` — NotImplementedError |
+| Sequential calibration | stub 있음 | `calibrate(sequential=True)` — NotImplementedError |
+| Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
+| Multi-GPU Observer 동기화 | stub 있음 | `BaseObserver.sync()` — NotImplementedError. rank 0 저장 가드는 구현됨 |
+| HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
 | Multi-model 검증 | 미진행 | Qwen3-0.6B 외 LLaMA 등 미확인 |
 
 ---

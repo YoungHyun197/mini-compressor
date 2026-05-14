@@ -252,10 +252,12 @@ README 작성 (설치법, 실행법, 지원 scheme, 설계 설명, limitation)
 trade-off 정리
 known limitation 정리
 ```
-- [ ] 설계 철학 슬라이드
-- [ ] 핵심 3문답 답변 준비 (추상화 단위 / Config 표현 / scheme 확장 범위)
-- [ ] 각 결정의 근거 + trade-off
-- [ ] known limitation (fake quant vs real, packing 없음 등)
+> 산출물. `presentation/slides.md` (13슬라이드 + Q&A backup), `presentation/script.md` (30분 발표 스크립트 + Q&A 풀텍스트).
+
+- [x] 설계 철학 슬라이드 (Slide 2 "Why this design?", Slide 3 OSS 차용 매핑)
+- [x] 핵심 3문답 답변 준비 (Slide 4-6: 추상화 단위 / Config 표현 / scheme 확장 범위)
+- [x] 각 결정의 근거 + trade-off (Slide 9 책임 분리, Slide 12 trade-off 표)
+- [x] known limitation (Slide 12 — fake quant 한계, packing 미지원, multi-model 미검증)
 
 ---
 

@@ -63,17 +63,28 @@ def main():
     args = parser.parse_args()
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
-    results   = {}
+    ppl_results = {}
+
+    # --ppl 시 encodings를 미리 준비 (모델마다 재사용)
+    encodings = None
+    if args.ppl:
+        from datasets import load_dataset
+        print("[PPL] wikitext-2-raw-v1 토크나이즈 중...")
+        dataset   = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+        text      = "\n\n".join(dataset["text"])
+        encodings = tokenizer(text, return_tensors="pt")
 
     # ── 1. FP16 baseline ──────────────────────────────────────────────────────
     print("\n[1/4] FP16 baseline")
     model = load_model()
     text_fp = generate(model, tokenizer)
     print(f"  {text_fp}")
-    results["FP16"] = model if args.ppl else None
-    if not args.ppl:
-        del model
-        torch.cuda.empty_cache()
+    if args.ppl:
+        print("  PPL 측정 중...")
+        ppl_results["FP16 (baseline)"] = compute_perplexity(model, encodings)
+        print(f"  PPL = {ppl_results['FP16 (baseline)']:.2f}")
+    del model
+    torch.cuda.empty_cache()
 
     # ── 2. W4A16 ─────────────────────────────────────────────────────────────
     print("\n[2/4] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
@@ -81,6 +92,10 @@ def main():
     Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"]).compress(model_w4)
     text_w4 = generate(model_w4, tokenizer)
     print(f"  {text_w4}")
+    if args.ppl:
+        print("  PPL 측정 중...")
+        ppl_results["W4A16 RTN"] = compute_perplexity(model_w4, encodings)
+        print(f"  PPL = {ppl_results['W4A16 RTN']:.2f}")
 
     if args.save:
         print(f"\n  → {args.save} 에 저장 중...")
@@ -118,6 +133,10 @@ def main():
     )
     text_w8 = generate(model_w8, tokenizer)
     print(f"  {text_w8}")
+    if args.ppl:
+        print("  PPL 측정 중...")
+        ppl_results["W8A8 static"] = compute_perplexity(model_w8, encodings)
+        print(f"  PPL = {ppl_results['W8A8 static']:.2f}")
     del model_w8
     torch.cuda.empty_cache()
 
@@ -127,30 +146,23 @@ def main():
     Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"]).compress(model_dyn)
     text_dyn = generate(model_dyn, tokenizer)
     print(f"  {text_dyn}")
-
-    # ── perplexity ─────────────────────────────────────────────────────────────
     if args.ppl:
-        from datasets import load_dataset
-        print("\n[PPL] wikitext-2-raw-v1 perplexity 측정 중...")
-        dataset   = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
-        text      = "\n\n".join(dataset["text"])
-        encodings = tokenizer(text, return_tensors="pt")
-
-        ppl_fp  = compute_perplexity(results["FP16"], encodings)
-        del results["FP16"]; torch.cuda.empty_cache()
-
-        ppl_dyn = compute_perplexity(model_dyn, encodings)
-
-        print(f"\n{'Scheme':<22} {'PPL':>8}  {'Δ vs FP16':>10}")
-        print("-" * 45)
-        for name, ppl in [("FP16", ppl_fp), ("W8A8 dynamic", ppl_dyn)]:
-            delta = f"+{ppl - ppl_fp:.2f}" if ppl != ppl_fp else "—"
-            print(f"{name:<22} {ppl:>8.2f}  {delta:>10}")
-
+        print("  PPL 측정 중...")
+        ppl_results["W8A8 dynamic"] = compute_perplexity(model_dyn, encodings)
+        print(f"  PPL = {ppl_results['W8A8 dynamic']:.2f}")
     del model_dyn
     torch.cuda.empty_cache()
 
-    # ── 요약 ──────────────────────────────────────────────────────────────────
+    # ── perplexity 요약 표 ─────────────────────────────────────────────────────
+    if args.ppl:
+        ppl_fp = ppl_results["FP16 (baseline)"]
+        print(f"\n{'Scheme':<22} {'PPL':>8}  {'Δ vs FP16':>10}")
+        print("-" * 45)
+        for name, ppl in ppl_results.items():
+            delta = "—" if name == "FP16 (baseline)" else f"+{ppl - ppl_fp:.2f}"
+            print(f"{name:<22} {ppl:>8.2f}  {delta:>10}")
+
+    # ── generate 결과 요약 ────────────────────────────────────────────────────
     print("\n" + "=" * 60)
     print(f"  [FP16]         {text_fp[:80]}")
     print(f"  [W4A16]        {text_w4[:80]}")

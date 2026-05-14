@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 from transformers import AutoConfig, AutoModelForCausalLM, PreTrainedTokenizerBase
 
-from .modifier import QuantizationModifier
+from .modifiers import QuantizationModifier
 from .schemes import QuantizationScheme, QuantizationSpec, SCHEME_REGISTRY
 
 _GRANULARITY_TO_STRATEGY = {
@@ -150,8 +150,8 @@ def load_pretrained(save_dir: str) -> nn.Module:
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16)
 
     # 3. FakeQuantLinear 구조 생성 (scale 계산 생략)
-    modifier = QuantizationModifier(model, scheme, ignore=ignore)
-    modifier.initialize(compute_scales=False)
+    modifier = QuantizationModifier(scheme, ignore=ignore, compute_scales=False)
+    modifier.initialize(model)
 
     # load 흐름에서는 observer 불필요 — finalize()와 동일 상태로 맞춤
     from .fake_quant_linear import FakeQuantLinear as _FQL

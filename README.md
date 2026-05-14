@@ -2,7 +2,7 @@
 
 PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingFace 모델의 W4A16(INT4), W8A8(INT8) 양자화를 one-click API로 수행하고, compressed-tensors 포맷으로 저장·복원합니다.
 
-> **현재 개발 진행 중입니다.** W4A16 RTN, W8A8 static/dynamic이 구현되어 있으며, SmoothQuant·GPTQ 등 고급 알고리즘은 구현 예정입니다.
+> **현재 개발 진행 중입니다.** W4A16 RTN, W8A8 static/dynamic, **W8A8 + SmoothQuant**가 구현되어 있으며, GPTQ·AWQ 등 고급 알고리즘은 구현 예정입니다.
 
 ---
 
@@ -20,17 +20,22 @@ PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingF
 
 ```
 mini_compressor/
-├── schemes.py           — QuantizationSpec, QuantizationScheme, W8A8/W4A16 프리셋
-├── observer.py          — activation 통계 수집 (MinMax / Percentile / MSE / KL-Divergence)
-├── fake_quant_linear.py — nn.Linear 교체 모듈 (flat buffer: weight_scale, input_scale)
-├── modifier.py          — initialize → calibrate → finalize 3단계 파이프라인
-├── compressor.py        — one-click 진입점 (Compressor API)
-└── serialize.py         — save_pretrained / load_pretrained (compressed-tensors 호환)
+├── schemes.py             — QuantizationSpec, QuantizationScheme, W8A8/W4A16 프리셋
+├── observer.py            — activation 통계 수집 (MinMax / Percentile / MSE / KL-Divergence)
+├── fake_quant_linear.py   — nn.Linear 교체 모듈 (flat buffer: weight_scale, input_scale)
+├── modifiers/             — 알고리즘별 Modifier 클래스 (composition pattern)
+│   ├── base.py            — BaseModifier 추상 인터페이스 (initialize / calibrate / finalize)
+│   ├── quantization.py    — QuantizationModifier (RTN — W4A16 / W8A8 static / dynamic)
+│   ├── smoothquant.py     — SmoothQuantModifier (activation 분포 평탄화)
+│   ├── gptq.py            — GPTQModifier (stub)
+│   └── awq.py             — AWQModifier (stub)
+├── compressor.py          — modifier list를 받아 lifecycle을 순차 실행하는 진입점
+└── serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
 
-demo.py                  — W4A16 / W8A8 / W8A8-dynamic 압축·생성·저장 end-to-end 데모
+demo.py                    — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant 압축·생성·저장 end-to-end 데모
 ```
 
-압축 흐름은 [AMD Quark](https://quark.docs.amd.com/)의 `initialize → calibrate → finalize` 패턴을, 저장 포맷은 [llm-compressor](https://github.com/vllm-project/llm-compressor)의 compressed-tensors 스펙을 따릅니다.
+압축 흐름은 [llm-compressor](https://github.com/vllm-project/llm-compressor)의 **modifier composition pattern**과 `initialize → calibrate → finalize` lifecycle을, module replacement는 [AMD Quark](https://quark.docs.amd.com/) 방식을, 저장 포맷은 llm-compressor의 compressed-tensors 스펙을 따릅니다. 새 알고리즘 추가 시 `BaseModifier` 상속한 새 파일 하나만 추가하면 됩니다.
 
 ---
 
@@ -101,6 +106,28 @@ compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
 ```
 
 `targets`와 `ignore`는 독립적으로 동작하며 `ignore`가 우선합니다. `targets=None`이면 모든 `nn.Linear`가 대상입니다.
+
+### W8A8 + SmoothQuant — activation 분포 평탄화
+
+W8A8 static의 정확도 손실은 주로 activation outlier에서 옵니다. SmoothQuant는 outlier를 weight 쪽으로 옮겨 per-tensor int8 양자화 오차를 줄입니다.
+
+```python
+from mini_compressor import (
+    Compressor,
+    QuantizationModifier,
+    SmoothQuantModifier,
+    W8A8,
+)
+
+compressor = Compressor([
+    SmoothQuantModifier(alpha=0.5),
+    QuantizationModifier(W8A8, targets=["Linear"], ignore=["lm_head"]),
+])
+compressor.compress(model, dataloader=calib_inputs)
+compressor.save(model, "./qwen3-w8a8-smq", tokenizer=tokenizer)
+```
+
+`Compressor`는 modifier list를 받아 각 modifier에 `initialize → calibrate → finalize`를 순차 호출합니다. SmoothQuant + W8A8, AWQ + W4A16 같은 알고리즘 chain을 list 순서로 자연스럽게 표현합니다.
 
 ### 저장된 모델 불러오기
 
@@ -194,17 +221,34 @@ save_dir/
 
 ### Perplexity (wikitext-2-raw-v1, Qwen3-0.6B)
 
+측정 환경 두 가지를 분리해 표기합니다.
+
+**(A) `python demo.py --ppl` — calibration 5 샘플 (재현 가능한 기본 데모 조건)**
+
+| Scheme | PPL | Δ vs FP16 |
+|--------|----:|----------:|
+| FP16 (baseline) | 18.16 | — |
+| W4A16 RTN | 25.89 | +7.73 |
+| W8A8 static | 25.01 | +6.85 |
+| **W8A8 + SmoothQuant** | **23.67** | **+5.51** |
+| W8A8 dynamic | **18.48** | **+0.32** |
+
+W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 — 같은 calibration 조건에서 **-1.34 개선**. per-tensor static의 본질적 한계 안에서 SmoothQuant이 activation outlier를 weight로 이관해 만든 차이.
+
+**(B) `notebooks/milestone11_perplexity.ipynb` — calibration 128 샘플 (대규모 calibration)**
+
 | Scheme | PPL | Δ vs FP16 |
 |--------|----:|----------:|
 | FP16 (baseline) | 18.16 | — |
 | W4A16 RTN | 25.89 | +7.73 |
 | W8A8 static | 27.75 | +9.59 |
-| W8A8 dynamic | **18.48** | **+0.32** |
+| W8A8 dynamic | 18.48 | +0.32 |
 
-측정 방식: sliding window (stride=512, max\_len=2048), wikitext-2 test split.
-calibration: W8A8 static은 wikitext-2 train split 128개 샘플 사용.
+> **흥미로운 관찰**: 128 샘플(B)이 5 샘플(A)보다 W8A8 static PPL이 더 나쁨 (27.75 vs 25.01). MinMax observer가 더 큰 데이터셋에서 outlier에 더 많이 노출돼 per-tensor scale을 과도하게 넓게 잡는 현상 — SmoothQuant 도입 동기를 정확히 보여주는 부수 결과.
 
-> **W8A8 dynamic이 FP16에 근접한 이유**: 토큰별로 runtime scale을 계산하므로 activation outlier에 영향을 받지 않습니다. W8A8 static의 degradation이 큰 이유는 MinMax observer가 outlier에 의해 per-tensor scale을 넓게 잡기 때문으로, SmoothQuant 적용 시 개선될 것으로 예상됩니다.
+측정 방식 공통: sliding window (stride=512, max\_len=2048), wikitext-2 test split.
+
+> **W8A8 dynamic이 FP16에 근접한 이유**: 토큰별로 runtime scale을 계산하므로 activation outlier에 영향을 받지 않습니다.
 
 ### Round-trip 일치 확인 (Qwen3-0.6B)
 
@@ -222,7 +266,7 @@ calibration: W8A8 static은 wikitext-2 train split 128개 샘플 사용.
 ## 데모 실행
 
 ```bash
-# 기본: 세 scheme 압축 후 generate 결과 비교
+# 기본: 네 scheme 압축 후 generate 결과 비교 (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant)
 python demo.py
 
 # W4A16 저장 + load_pretrained round-trip 확인
@@ -246,7 +290,8 @@ pytest tests/ -v
 | 파일 | 내용 |
 |------|------|
 | `test_fake_quant_linear.py` | per-tensor / per-channel / per-group fake quant 수치 검증 |
-| `test_modifier.py` | initialize / calibrate / finalize 파이프라인, scale shape |
+| `test_modifier.py` | QuantizationModifier initialize / calibrate / finalize, scale shape |
+| `test_smoothquant.py` | SmoothQuant pair 탐색, 등가 변환 수치 검증, Compressor chain 통합 |
 | `test_serialize.py` | scheme ↔ dict 변환 round-trip, 파일 생성 확인 |
 | `test_compressor.py` | Compressor API, from\_scheme, compress, save |
 
@@ -259,23 +304,23 @@ pytest tests/ -v
 - [x] Fake quantization (W4A16 RTN, W8A8 static, W8A8 dynamic per-token)
 - [x] 4종 calibration observer (MinMax, Percentile, MSE, KL-Divergence)
 - [x] compressed-tensors 호환 save / load + round-trip 일치 확인 (Qwen3-0.6B)
-- [x] Compressor one-click API
-- [x] End-to-End 데모 (`demo.py`) — 세 scheme compress → generate → save → load 전체 흐름
-- [x] 단위 테스트 24개, CI 통과
+- [x] Compressor one-click API + modifier composition (BaseModifier + per-algorithm class)
+- [x] **SmoothQuant** (`SmoothQuantModifier`) — activation 분포 평탄화로 W8A8 정확도 향상
+- [x] End-to-End 데모 (`demo.py`) — 네 scheme (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant) compress → generate → save → load 전체 흐름
+- [x] 단위 테스트 27개, CI 통과
 
 ### 진행 중
 
 아래 기능은 인터페이스(stub)만 정의되어 있으며 호출 시 `NotImplementedError`를 발생시킵니다. 각 stub에는 입출력 타입, docstring, 의도된 동작이 명세되어 있습니다.
 
-- [ ] **SmoothQuant** (`QuantizationModifier.smooth()`) — activation 분포 평탄화로 W8A8 정확도 향상
-- [ ] **GPTQ** (`QuantizationModifier.gptq()`) — Hessian 기반 weight update로 W4A16 정확도 향상
-- [ ] **AWQ** (`QuantizationModifier.awq()`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
-- [ ] **Sequential calibration** (`calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
+- [ ] **GPTQ** (`GPTQModifier`) — Hessian 기반 weight update로 W4A16 정확도 향상
+- [ ] **AWQ** (`AWQModifier`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
+- [ ] **Sequential calibration** (`QuantizationModifier.calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
 - [ ] **Multi-GPU 지원** — `BaseObserver.sync()` all-reduce 동기화, `device_map="auto"` 호환 검증 (rank 0 저장 가드만 구현됨)
 - [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push
 - [ ] **Multi-model 검증** — LLaMA-3.2-1B 등 다른 아키텍처에서 동작 확인
-- [ ] **lm-eval perplexity 측정** — 알고리즘별 정량 비교
+- [ ] **W8A8 + SmoothQuant perplexity 측정** — `python demo.py --ppl` 로 측정 후 README 표 갱신
 
 ---
 

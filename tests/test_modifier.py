@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 
 from mini_compressor.fake_quant_linear import FakeQuantLinear
-from mini_compressor.modifier import QuantizationModifier
+from mini_compressor.modifiers import QuantizationModifier
 from mini_compressor.schemes import W8A8, W4A16
 
 
@@ -27,8 +27,8 @@ def test_initialize_replaces_linear():
     linear2 = nn.Linear(32, 16)
     model = nn.Sequential(linear1, linear2)
 
-    modifier = QuantizationModifier(model, W8A8)
-    modifier.initialize()
+    modifier = QuantizationModifier(W8A8)
+    modifier.initialize(model)
 
     fql1, fql2 = model[0], model[1]
     assert isinstance(fql1, FakeQuantLinear)
@@ -46,8 +46,8 @@ def test_initialize_replaces_linear():
 def test_initialize_ignores_module():
     # ignore 목록에 있는 모듈은 nn.Linear로 유지되어야 함
     model = TinyModel()
-    modifier = QuantizationModifier(model, W8A8, ignore=["lm_head"])
-    modifier.initialize()
+    modifier = QuantizationModifier(W8A8, ignore=["lm_head"])
+    modifier.initialize(model)
 
     assert isinstance(model.fc, FakeQuantLinear)
     assert type(model.lm_head) is nn.Linear
@@ -56,8 +56,8 @@ def test_initialize_ignores_module():
 def test_initialize_w4a16_scale_shape():
     # W4A16 per_group scale shape이 [out_features, in_features // group_size]인지 확인
     model = nn.Sequential(nn.Linear(128, 64))
-    modifier = QuantizationModifier(model, W4A16)
-    modifier.initialize()
+    modifier = QuantizationModifier(W4A16)
+    modifier.initialize(model)
 
     fql = model[0]
     assert isinstance(fql, FakeQuantLinear)
@@ -67,8 +67,8 @@ def test_initialize_w4a16_scale_shape():
 def test_calibrate_sets_input_scale():
     # W8A8 calibrate 후 input_scale이 채워지는지 확인
     model = nn.Sequential(nn.Linear(64, 32))
-    modifier = QuantizationModifier(model, W8A8)
-    modifier.initialize()
+    modifier = QuantizationModifier(W8A8)
+    modifier.initialize(model)
 
     dataloader = [torch.randn(2, 64) for _ in range(3)]
     modifier.calibrate(dataloader)
@@ -81,8 +81,8 @@ def test_calibrate_sets_input_scale():
 def test_calibrate_skips_w4a16():
     # W4A16은 activation=None이므로 calibrate 후에도 input_scale이 None이어야 함
     model = nn.Sequential(nn.Linear(128, 64))
-    modifier = QuantizationModifier(model, W4A16)
-    modifier.initialize()
+    modifier = QuantizationModifier(W4A16)
+    modifier.initialize(model)
 
     dataloader = [torch.randn(2, 128) for _ in range(3)]
     modifier.calibrate(dataloader)
@@ -93,8 +93,8 @@ def test_calibrate_skips_w4a16():
 def test_finalize_removes_observer():
     # finalize 후 input_observer가 None으로 제거되는지 확인
     model = nn.Sequential(nn.Linear(64, 32))
-    modifier = QuantizationModifier(model, W8A8)
-    modifier.initialize()
+    modifier = QuantizationModifier(W8A8)
+    modifier.initialize(model)
 
     dataloader = [torch.randn(2, 64) for _ in range(3)]
     modifier.calibrate(dataloader)

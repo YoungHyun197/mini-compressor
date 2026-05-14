@@ -100,22 +100,29 @@ generate 확인
 ### Milestone 6 — 고급 압축 기법 확장 (시간 허락 시)
 > W4A16 RTN은 M5에 통합 완료. M6은 SmoothQuant / GPTQ 확장만 담당.
 
-### Milestone 6-A — SmoothQuant (시간 허락 시)
+### Milestone 6-A — SmoothQuant ✅ 완료 (feature/smoothquant 브랜치)
 ```
-modifier.py에 smooth() 단계 추가
+modifier composition 리팩토링 + SmoothQuantModifier 실구현
+norm → linear group 자동 탐색
 per-channel scaling factor s 계산 (α=0.5)
-FakeQuantLinear.weight에 s 흡수
-W8A8 + SmoothQuant generate 확인
-RTN W8A8 대비 perplexity 비교
+norm.weight /= s, linear.weight *= s 적용
+Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)]) chain 동작
 ```
-변경 파일: `modifier.py` 만
+변경 파일: `mini_compressor/modifiers/` (신규 디렉토리), `compressor.py`, `serialize.py`, tests, `demo.py`
 
-- [ ] `modifier.py`에 `smooth()` 메서드 구현
-  - [ ] calibration forward로 activation max 통계 수집
-  - [ ] `s = max(|X|)^α / max(|W|)^(1-α)` 계산 (α=0.5)
-  - [ ] `FakeQuantLinear.weight *= diag(s)` 흡수
-- [ ] W8A8 + SmoothQuant generate 확인
-- [ ] lm-eval perplexity 비교 (RTN vs SmoothQuant)
+- [x] `modifier.py` → `modifiers/` 디렉토리 분리 (BaseModifier + 알고리즘별 클래스)
+- [x] `SmoothQuantModifier` 실구현 (`modifiers/smoothquant.py`)
+  - [x] norm-linear pair 자동 탐색 (`input_layernorm`→q/k/v_proj, `post_attention_layernorm`→gate/up_proj)
+  - [x] forward pre-hook으로 channel-wise activation abs max 수집
+  - [x] `s = max(|X|)^α / max(|W|)^(1-α)` 계산 (α=0.5 기본)
+  - [x] `norm.weight /= s`, `linear.weight *= s` 적용
+- [x] `Compressor` API 갱신 — modifier list 수용 (`Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)])`)
+- [x] backward compatibility 유지 — `Compressor.from_scheme("w8a8")` 그대로 동작
+- [x] 동등성 단위 테스트 3개 추가 (`tests/test_smoothquant.py`)
+- [x] `demo.py`에 W8A8+SmoothQuant 옵션 추가
+- [x] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`)
+  - W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 (-1.34 개선, 5 샘플 calibration)
+  - refactor 회귀 확인 — W4A16/FP16/dynamic 기존 측정값과 일치
 
 ---
 
@@ -347,10 +354,10 @@ demo.py 작성
 | 기능 | 상태 | 비고 |
 |------|------|------|
 | per-token dynamic quantization | **구현 완료** | `W8A8_DYNAMIC` preset — `granularity="per_token"` + `dynamic=True`. 런타임에 토큰별 scale 계산, calibration 불필요 |
+| **SmoothQuant** | **구현 완료** | `SmoothQuantModifier` — `Compressor([SmoothQuantModifier(0.5), QuantizationModifier(W8A8)])` 형태로 사용. activation 분포 평탄화 |
 | real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
-| SmoothQuant | stub 있음 | `QuantizationModifier.smooth()` — NotImplementedError |
-| GPTQ | stub 있음 | `QuantizationModifier.gptq()` — NotImplementedError |
-| AWQ | stub 있음 | `QuantizationModifier.awq()` — NotImplementedError |
+| GPTQ | stub 있음 | `GPTQModifier` — NotImplementedError |
+| AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
 | Sequential calibration | stub 있음 | `calibrate(sequential=True)` — NotImplementedError |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
 | Multi-GPU Observer 동기화 | stub 있음 | `BaseObserver.sync()` — NotImplementedError. rank 0 저장 가드는 구현됨 |
@@ -361,12 +368,13 @@ demo.py 작성
 
 ## 현재 작업 위치
 
-> **Milestone 1–9, 11, 12 완료**
+> **Milestone 1–12 완료** (M6-A SmoothQuant 포함, `feature/smoothquant` 브랜치)
 
 **다음 할 일.**
-1. Milestone 6-A: SmoothQuant 구현
-2. Milestone 13: Multi-GPU 지원
-3. Milestone 10: 발표자료 + trade-off 정리
+1. W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`) → README 표 업데이트
+2. Milestone 13: Multi-GPU 지원 (`BaseObserver.sync()` all-reduce 구현)
+3. Milestone 6-D: LLaMA-3.2-1B 멀티모델 검증
+4. Milestone 6-B: GPTQ 실제 구현
 
 ---
 

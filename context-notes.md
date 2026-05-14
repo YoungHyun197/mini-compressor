@@ -8,14 +8,19 @@
 
 ```
 mini_compressor/
-  schemes.py           — QuantizationSpec, QuantizationScheme, W8A8/W4A16/W8A8_DYNAMIC, SCHEME_REGISTRY
-  observer.py          — BaseObserver(+sync stub), MinMax/Percentile/MSE/KLDivergence observer
-  fake_quant_linear.py — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
-  modifier.py          — QuantizationModifier (initialize/calibrate/finalize, smooth/gptq/awq stub)
-  compressor.py        — Compressor API (from_scheme/compress/save, save_to_hub stub)
-  serialize.py         — save_pretrained / load_pretrained (compressed-tensors 호환)
+  schemes.py             — QuantizationSpec, QuantizationScheme, W8A8/W4A16/W8A8_DYNAMIC, SCHEME_REGISTRY
+  observer.py            — BaseObserver(+sync stub), MinMax/Percentile/MSE/KLDivergence observer
+  fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
+  modifiers/             — modifier composition pattern (llm-compressor 정렬)
+    base.py              — BaseModifier 추상 인터페이스 (initialize/calibrate/finalize)
+    quantization.py      — QuantizationModifier (RTN)
+    smoothquant.py       — SmoothQuantModifier (실구현)
+    gptq.py              — GPTQModifier (stub)
+    awq.py               — AWQModifier (stub)
+  compressor.py          — Compressor (modifier list 수용, from_scheme/compress/save, save_to_hub stub)
+  serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
 
-demo.py                — W4A16 / W8A8 / W8A8-dynamic end-to-end 데모 (--save, --ppl 옵션)
+demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-to-end 데모 (--save, --ppl 옵션)
 ```
 
 ---
@@ -376,10 +381,111 @@ if not model_id:
 
 | stub | 파일 | 위치 | 설명 |
 |------|------|------|------|
-| `gptq()` | modifier.py | 메서드 | Hessian 기반 W4A16. `calibrate()` 대체 |
-| `awq()` | modifier.py | 메서드 | activation magnitude 기반 W4A16. `smooth()` 와 동일 위치 |
+| `GPTQModifier` | modifiers/gptq.py | 클래스 | Hessian 기반 W4A16. BaseModifier 상속 |
+| `AWQModifier` | modifiers/awq.py | 클래스 | activation magnitude 기반 W4A16. BaseModifier 상속 |
 | `BaseObserver.sync()` | observer.py | 메서드 | multi-GPU all-reduce 자리 표시 |
 | `save_to_hub()` | compressor.py | 메서드 | HF Hub 업로드. 파일 구조가 이미 HF 호환 |
 | float8 경로 | fake_quant_linear.py | 분기 | `spec.dtype == "float8"` 시 NotImplementedError |
 
 모든 stub은 입출력 타입, 의도된 동작, 참고 논문을 docstring에 명세함.
+
+---
+
+## 2026-05-14 — Modifier composition 리팩토링 + SmoothQuant 실구현
+
+### 22. modifier.py → modifiers/ 디렉토리 (composition pattern)
+
+**문제**: 원래 `QuantizationModifier` 한 클래스에 `smooth/gptq/awq` 메서드가 박혀 있어 god-class 형태.
+
+**해결**: llm-compressor의 modifier composition pattern으로 재구성.
+
+| 변경 전 | 변경 후 |
+|---------|---------|
+| `modifier.py:QuantizationModifier.smooth()` | `modifiers/smoothquant.py:SmoothQuantModifier` |
+| `modifier.py:QuantizationModifier.gptq()` | `modifiers/gptq.py:GPTQModifier` |
+| `modifier.py:QuantizationModifier.awq()` | `modifiers/awq.py:AWQModifier` |
+| `Compressor.compress(model, dataloader)` 내부에서 단일 modifier | `Compressor(modifiers=[...])` 가 list 순회 |
+
+**핵심 변경.**
+- `BaseModifier` 추상 인터페이스 (`modifiers/base.py`): `initialize(model) / calibrate(dataloader, num_samples) / finalize()`.
+- `QuantizationModifier.__init__(scheme, ...)` — `compute_scales`를 생성자 인자로 이동. `initialize(model)`이 model을 받는 형태.
+- `Compressor.__init__(modifiers: list[BaseModifier])` — list 수용.
+- `Compressor.from_scheme(name, ...)` — 단일 `QuantizationModifier`로 감싸서 list 생성. **backward compat 유지**.
+- `Compressor.save()` — modifier list에서 `QuantizationModifier` 인스턴스를 찾아 그 scheme/ignore로 `save_pretrained` 호출.
+- `serialize.py:load_pretrained` — 새 시그니처에 맞춰 `QuantizationModifier(scheme, ignore=..., compute_scales=False)` + `modifier.initialize(model)`로 갱신.
+
+**근거 (왜 composition pattern?):**
+- 조합 표현: `[SmoothQuantModifier, QuantizationModifier(W4A16)]`, `[SmoothQuantModifier, GPTQModifier(W4A16)]` 같은 chain을 list 순서로 자연스럽게 표현.
+- 변경 범위 제한: 새 알고리즘 = `modifiers/<algo>.py` 한 파일 추가. 기존 modifier 무수정.
+- 면접 답변 강화: road_map 17.3, 19번 질문 ("새 알고리즘 추가 시 변경 범위") 답변이 "새 파일 추가만"으로 강화됨.
+
+### 23. SmoothQuantModifier 알고리즘 상세
+
+**적용 대상 자동 탐색** (`_find_smooth_pairs`):
+- `*.input_layernorm` → `*.self_attn.{q_proj, k_proj, v_proj}` (그룹 단위 smooth)
+- `*.post_attention_layernorm` → `*.mlp.{gate_proj, up_proj}` (그룹 단위 smooth)
+- `o_proj`, `down_proj`는 직전이 norm이 아니므로 표준 SmoothQuant에서 제외 (논문도 동일)
+
+**Hook 기반 통계 수집**: `register_forward_pre_hook`으로 첫 linear의 입력 `x`를 받아 채널별 abs max 누적.
+
+**Smooth factor 적용**:
+- `s = (x_max.pow(alpha) / w_max.pow(1-alpha)).clamp(min=1e-5)` (float32 계산)
+- `norm.weight.data /= s` (등가 변환)
+- `linear.weight.data *= s.unsqueeze(0)` (in_features 차원 broadcast)
+
+**수치 검증 (test_smoothquant.py:test_smooth_preserves_forward_output)**:
+SmoothQuant 단독 적용 후 (양자화 없이) forward 출력이 원본과 1e-3 이내 일치.
+등가 변환이므로 수학적으로 동일, 실제 차이는 float 누적 오차 수준.
+
+### 24. Compressor.save() — modifier list에서 scheme 추출
+
+기존: `Compressor`가 `scheme/ignore`를 직접 보유.
+신규: modifier list에서 `QuantizationModifier` 인스턴스를 찾아 그 scheme/ignore 사용 (`_find_quantization_modifier`).
+
+**이유**: modifier list가 사용자 입력의 단일 진실 출처(single source of truth)가 되어 Compressor 내부에 별도 scheme 상태를 두지 않음.
+
+**에러 가드**: modifier list에 `QuantizationModifier`가 없으면 `save()` 호출 시 명시적 에러.
+
+### 25. LayerNorm bias 흡수 누락 fix
+
+**문제**: 초기 `SmoothQuantModifier.calibrate()`는 `norm.weight /= s`만 적용. LayerNorm은 affine 두 개(`weight=gamma`, `bias=beta`)를 갖는데 bias는 그대로 두면 등가 변환이 깨진다.
+
+수식:
+```
+y = gamma * x_hat + beta
+y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
+```
+
+**Qwen3/LLaMA는 RMSNorm(bias 없음)이라 문제가 드러나지 않았다.** 초기 등가 검증 테스트(`test_smooth_preserves_forward_output`)도 `nn.LayerNorm` 기본 초기화(bias=0)를 써서 false-positive로 통과했다.
+
+**Fix**: `getattr(norm, "bias", None) is not None`이면 `norm.bias /= s`도 적용.
+
+**회귀 테스트 추가** (`test_smooth_preserves_forward_with_layernorm_bias`): LayerNorm bias를 비제로로 강제 초기화한 모델에서 등가 변환 유지 확인. 학습된 LayerNorm 모델(GPT-2, BERT, OPT 등) 시뮬레이션.
+
+### 26. SmoothQuant PPL 측정 결과 및 calibration 샘플 효과 관찰
+
+**측정 결과** (Qwen3-0.6B, wikitext-2, sliding window stride=512 max_len=2048):
+
+| Scheme | demo (5 샘플) | milestone11 (128 샘플) |
+|--------|--------------:|----------------------:|
+| FP16 | 18.16 | 18.16 |
+| W4A16 RTN | 25.89 | 25.89 |
+| W8A8 static | 25.01 | 27.75 |
+| W8A8 dynamic | 18.48 | 18.48 |
+| W8A8 + SmoothQuant | **23.67** | (미측정) |
+
+**관찰 1 — refactor 회귀 없음**: W4A16, FP16, dynamic 모두 기존 측정값과 정확히 일치. modifier composition 리팩토링이 RTN 동작을 깨뜨리지 않음.
+
+**관찰 2 — SmoothQuant 효과**: 동일 calibration 조건(5 샘플)에서 W8A8 static 25.01 → SmoothQuant 23.67. **-1.34 개선**. per-tensor static의 본질적 한계 안에서 의미 있는 차이.
+
+**관찰 3 — calibration 샘플 효과 (비직관적)**: 같은 W8A8 static인데 128 샘플(27.75) > 5 샘플(25.01). MinMax observer는 본질적으로 outlier에 민감 — 더 큰 데이터셋에서 outlier에 더 많이 노출되어 per-tensor scale을 과도하게 넓게 잡는다.
+- **함의**: MinMax observer는 calibration sample을 늘려도 PPL이 개선되지 않을 수 있다. SmoothQuant이나 percentile/MSE observer가 본질 해결책.
+- 발표 자료에서 SmoothQuant 동기를 설명할 때 이 관찰을 함께 제시 가능.
+
+### 작업 위치 (이 세션 마무리 기준)
+
+- 브랜치: `feature/smoothquant`
+- 28개 단위 테스트 통과 (24 기존 + 4 SmoothQuant)
+- demo.py에 5번째 케이스 (W8A8 + SmoothQuant) 추가
+- README 검증 결과 표: 5 샘플 / 128 샘플 두 환경 분리 명시
+- **다음 후보**: M13 Multi-GPU / M6-D LLaMA 검증 / M6-B GPTQ / 본 브랜치 main 머지.

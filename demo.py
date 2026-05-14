@@ -1,7 +1,7 @@
-# mini-compressor 데모 — W4A16 / W8A8 / W8A8-dynamic 압축·생성·저장 round-trip
+# mini-compressor 데모 — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant 압축·생성·저장 round-trip
 """
 사용법:
-    python demo.py                        # 기본: 세 scheme 생성 비교
+    python demo.py                        # 기본: 네 scheme 생성 비교
     python demo.py --save /tmp/demo_save  # W4A16 저장 + 로드 round-trip 추가
     python demo.py --ppl                  # wikitext-2 perplexity 측정 추가 (시간 소요)
 """
@@ -12,7 +12,13 @@ import os
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from mini_compressor import Compressor, load_pretrained
+from mini_compressor import (
+    Compressor,
+    QuantizationModifier,
+    SmoothQuantModifier,
+    W8A8,
+    load_pretrained,
+)
 
 MODEL_ID = "Qwen/Qwen3-0.6B"
 PROMPT   = "The key advantage of quantization is"
@@ -75,7 +81,7 @@ def main():
         encodings = tokenizer(text, return_tensors="pt")
 
     # ── 1. FP16 baseline ──────────────────────────────────────────────────────
-    print("\n[1/4] FP16 baseline")
+    print("\n[1/5] FP16 baseline")
     model = load_model()
     text_fp = generate(model, tokenizer)
     print(f"  {text_fp}")
@@ -87,7 +93,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ── 2. W4A16 ─────────────────────────────────────────────────────────────
-    print("\n[2/4] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
+    print("\n[2/5] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
     model_w4 = load_model()
     Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"]).compress(model_w4)
     text_w4 = generate(model_w4, tokenizer)
@@ -115,7 +121,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ── 3. W8A8 static ────────────────────────────────────────────────────────
-    print("\n[3/4] W8A8 static — weight+activation INT8 (MinMax calibration)")
+    print("\n[3/5] W8A8 static — weight+activation INT8 (MinMax calibration)")
     model_w8 = load_model()
     calib_texts = [
         "The quick brown fox jumps over the lazy dog.",
@@ -141,7 +147,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ── 4. W8A8 dynamic ───────────────────────────────────────────────────────
-    print("\n[4/4] W8A8 dynamic — per-token INT8 (calibration 불필요)")
+    print("\n[4/5] W8A8 dynamic — per-token INT8 (calibration 불필요)")
     model_dyn = load_model()
     Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"]).compress(model_dyn)
     text_dyn = generate(model_dyn, tokenizer)
@@ -151,6 +157,24 @@ def main():
         ppl_results["W8A8 dynamic"] = compute_perplexity(model_dyn, encodings)
         print(f"  PPL = {ppl_results['W8A8 dynamic']:.2f}")
     del model_dyn
+    torch.cuda.empty_cache()
+
+    # ── 5. W8A8 + SmoothQuant ─────────────────────────────────────────────────
+    print("\n[5/5] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 static")
+    model_sq = load_model()
+    Compressor(
+        [
+            SmoothQuantModifier(alpha=0.5),
+            QuantizationModifier(W8A8, targets=["Linear"], ignore=["lm_head"]),
+        ]
+    ).compress(model_sq, dataloader=calib_inputs)
+    text_sq = generate(model_sq, tokenizer)
+    print(f"  {text_sq}")
+    if args.ppl:
+        print("  PPL 측정 중...")
+        ppl_results["W8A8 + SmoothQuant"] = compute_perplexity(model_sq, encodings)
+        print(f"  PPL = {ppl_results['W8A8 + SmoothQuant']:.2f}")
+    del model_sq
     torch.cuda.empty_cache()
 
     # ── perplexity 요약 표 ─────────────────────────────────────────────────────
@@ -164,10 +188,11 @@ def main():
 
     # ── generate 결과 요약 ────────────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print(f"  [FP16]         {text_fp[:80]}")
-    print(f"  [W4A16]        {text_w4[:80]}")
-    print(f"  [W8A8 static]  {text_w8[:80]}")
-    print(f"  [W8A8 dynamic] {text_dyn[:80]}")
+    print(f"  [FP16]              {text_fp[:80]}")
+    print(f"  [W4A16]             {text_w4[:80]}")
+    print(f"  [W8A8 static]       {text_w8[:80]}")
+    print(f"  [W8A8 dynamic]      {text_dyn[:80]}")
+    print(f"  [W8A8 + SmoothQuant]{text_sq[:80]}")
     print("=" * 60)
 
 

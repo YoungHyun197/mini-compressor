@@ -34,7 +34,7 @@ def test_from_scheme_unknown_raises():
 
 def test_compress_w4a16_replaces_linear():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w4a16", ignore=["lm_head"])
+    compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)
 
     assert isinstance(model.proj, FakeQuantLinear), "proj은 FakeQuantLinear로 교체되어야 함"
@@ -44,7 +44,7 @@ def test_compress_w4a16_replaces_linear():
 
 def test_compress_w4a16_scale_shape():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w4a16", ignore=["lm_head"])
+    compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)
 
     proj = model.proj
@@ -55,7 +55,7 @@ def test_compress_w4a16_scale_shape():
 
 def test_compress_w8a8_with_calibration():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
+    compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
 
     # _TinyLM.forward(x)는 positional arg이므로 tuple 형태로 전달
     dataloader_tuple = [(torch.randn(2, 256),) for _ in range(3)]
@@ -69,7 +69,7 @@ def test_compress_w8a8_with_calibration():
 def test_compress_w8a8_dynamic_no_calibration():
     """W8A8_DYNAMIC는 calibration 데이터 없이도 compress가 완료되어야 한다."""
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w8a8_dynamic", ignore=["lm_head"])
+    compressor = Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)  # dataloader 없이 호출
 
     proj = model.proj
@@ -85,7 +85,7 @@ def test_compress_w8a8_dynamic_no_calibration():
 
 def test_compressor_save_creates_files():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w4a16", ignore=["lm_head"])
+    compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)
 
     with tempfile.TemporaryDirectory() as tmpdir:

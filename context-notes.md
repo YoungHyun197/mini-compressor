@@ -446,10 +446,26 @@ SmoothQuant 단독 적용 후 (양자화 없이) forward 출력이 원본과 1e-
 
 **에러 가드**: modifier list에 `QuantizationModifier`가 없으면 `save()` 호출 시 명시적 에러.
 
+### 25. LayerNorm bias 흡수 누락 fix
+
+**문제**: 초기 `SmoothQuantModifier.calibrate()`는 `norm.weight /= s`만 적용. LayerNorm은 affine 두 개(`weight=gamma`, `bias=beta`)를 갖는데 bias는 그대로 두면 등가 변환이 깨진다.
+
+수식:
+```
+y = gamma * x_hat + beta
+y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
+```
+
+**Qwen3/LLaMA는 RMSNorm(bias 없음)이라 문제가 드러나지 않았다.** 초기 등가 검증 테스트(`test_smooth_preserves_forward_output`)도 `nn.LayerNorm` 기본 초기화(bias=0)를 써서 false-positive로 통과했다.
+
+**Fix**: `getattr(norm, "bias", None) is not None`이면 `norm.bias /= s`도 적용.
+
+**회귀 테스트 추가** (`test_smooth_preserves_forward_with_layernorm_bias`): LayerNorm bias를 비제로로 강제 초기화한 모델에서 등가 변환 유지 확인. 학습된 LayerNorm 모델(GPT-2, BERT, OPT 등) 시뮬레이션.
+
 ### 작업 위치 (이 세션 마무리 기준)
 
 - 브랜치: `feature/smoothquant`
-- 27개 단위 테스트 통과 (24 기존 + 3 SmoothQuant)
+- 28개 단위 테스트 통과 (24 기존 + 4 SmoothQuant)
 - demo.py에 5번째 케이스 (W8A8 + SmoothQuant) 추가
 - README/PROGRESS/road_map/context-notes 갱신 완료
 - **다음**: W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`) → README 검증 결과 표 행 채움.

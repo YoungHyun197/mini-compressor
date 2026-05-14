@@ -101,6 +101,11 @@ class SmoothQuantModifier(BaseModifier):
 
             s_norm_dtype = s.to(dtype=norm.weight.dtype, device=norm.weight.device)
             norm.weight.data.div_(s_norm_dtype)
+            # LayerNorm bias도 동일한 등가 변환에 포함되어야 한다.
+            # y = gamma * x_hat + beta → (gamma/s) * x_hat + (beta/s) = y / s.
+            # RMSNorm은 bias가 없으므로 이 분기가 작동 안 함 (Qwen3/LLaMA).
+            if getattr(norm, "bias", None) is not None:
+                norm.bias.data.div_(s_norm_dtype)
             for lin in linears:
                 s_lin = s.to(dtype=lin.weight.dtype, device=lin.weight.device)
                 lin.weight.data.mul_(s_lin.unsqueeze(0))

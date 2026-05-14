@@ -85,6 +85,37 @@ def test_smooth_preserves_forward_output():
     )
 
 
+def test_smooth_preserves_forward_with_layernorm_bias():
+    """LayerNorm bias가 0이 아닌 경우에도 SmoothQuant 등가 변환이 유지되어야 한다.
+
+    norm.weight만 /= s 하고 norm.bias는 두면 (beta/s != beta이므로) 출력이 어긋난다.
+    이 테스트는 bias를 학습된 모델처럼 비제로로 초기화해 그 회귀를 막는다.
+    """
+    torch.manual_seed(0)
+    model = _MiniDecoderLayer(hidden_size=32, intermediate_size=64)
+    # LayerNorm bias를 비제로로 강제 — 학습된 LayerNorm 모델 (GPT-2, BERT, OPT 등) 시뮬레이션
+    with torch.no_grad():
+        model.input_layernorm.bias.copy_(torch.randn(32) * 0.1)
+        model.post_attention_layernorm.bias.copy_(torch.randn(32) * 0.1)
+    model.eval()
+
+    x = torch.randn(4, 8, 32)
+    with torch.no_grad():
+        y_orig = model(x)
+
+    sq = SmoothQuantModifier(alpha=0.5)
+    sq.initialize(model)
+    sq.calibrate([x for _ in range(2)])
+    sq.finalize()
+
+    with torch.no_grad():
+        y_smoothed = model(x)
+
+    assert torch.allclose(y_orig, y_smoothed, atol=1e-3, rtol=1e-3), (
+        f"LayerNorm bias 흡수 누락 추정 — max abs diff = {(y_orig - y_smoothed).abs().max().item()}"
+    )
+
+
 def test_compressor_chain_smoothquant_then_w8a8():
     """Compressor([SmoothQuant, QuantizationModifier(W8A8)]) 신규 형태가 동작해야 한다."""
     torch.manual_seed(0)
@@ -112,5 +143,6 @@ def test_compressor_chain_smoothquant_then_w8a8():
 if __name__ == "__main__":
     test_find_smooth_pairs_detects_attn_and_mlp()
     test_smooth_preserves_forward_output()
+    test_smooth_preserves_forward_with_layernorm_bias()
     test_compressor_chain_smoothquant_then_w8a8()
     print("\n모든 SmoothQuant 테스트 통과")

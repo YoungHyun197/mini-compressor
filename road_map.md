@@ -777,19 +777,23 @@ W4A16 RTN per-group weight fake quant → M5 구현 시점에 이미 완성
 M6은 SmoothQuant / GPTQ 확장 milestone으로 재정의
 ```
 
-### Milestone 6-A — SmoothQuant (시간 허락 시)
+### Milestone 6-A — SmoothQuant ✅ 완료 (feature/smoothquant 브랜치)
 
 ```text
-modifier.py에 smooth() 단계 추가
-calibration forward로 activation 통계 수집
-per-channel scaling factor s = max(|X|)^α / max(|W|)^(1-α) 계산 (α=0.5 default)
-FakeQuantLinear.weight에 s 흡수 (weight 값 직접 수정)
-이후 W8A8 RTN calibrate()와 동일 경로로 진행
-generate 확인 + perplexity 비교
+modifier composition 리팩토링 (modifier.py → modifiers/ 디렉토리)
+BaseModifier + 알고리즘별 클래스 (Quantization / SmoothQuant / GPTQ stub / AWQ stub)
+Compressor가 modifier list 수용 → algorithm chain을 list 순서로 표현
+SmoothQuantModifier 실구현:
+  - norm-linear pair 자동 탐색 (input_layernorm→q/k/v_proj, post_attention_layernorm→gate/up_proj)
+  - forward pre-hook으로 channel-wise activation abs max 수집
+  - s = max(|X|)^α / max(|W|)^(1-α) 계산 (α=0.5 default)
+  - norm.weight /= s, linear.weight *= s 적용
 ```
 
-변경 파일: `modifier.py` (`smooth()` 메서드 추가)  
-변경 없음: `fake_quant_linear.py`, `schemes.py`, `compressor.py`, `serialize.py`
+변경 파일: `mini_compressor/modifiers/` (신규), `compressor.py`, `serialize.py`, tests, `demo.py`  
+변경 없음: `fake_quant_linear.py`, `schemes.py`, `observer.py`
+
+> **설계 검증 효과**: 새 알고리즘 추가가 `modifiers/<algo>.py` 한 파일 추가로 끝난다는 점이 SmoothQuant 구현으로 입증됐다. road_map 17.3 / 19 답변 강도 상승.
 
 ### Milestone 6-B — GPTQ (시간 허락 시)
 

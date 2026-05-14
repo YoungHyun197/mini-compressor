@@ -120,7 +120,9 @@ Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)]) chain 동작
 - [x] backward compatibility 유지 — `Compressor.from_scheme("w8a8")` 그대로 동작
 - [x] 동등성 단위 테스트 3개 추가 (`tests/test_smoothquant.py`)
 - [x] `demo.py`에 W8A8+SmoothQuant 옵션 추가
-- [ ] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`) — README 표 업데이트 예정
+- [x] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`)
+  - W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 (-1.34 개선, 5 샘플 calibration)
+  - refactor 회귀 확인 — W4A16/FP16/dynamic 기존 측정값과 일치
 
 ---
 

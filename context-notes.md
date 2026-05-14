@@ -462,10 +462,30 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **회귀 테스트 추가** (`test_smooth_preserves_forward_with_layernorm_bias`): LayerNorm bias를 비제로로 강제 초기화한 모델에서 등가 변환 유지 확인. 학습된 LayerNorm 모델(GPT-2, BERT, OPT 등) 시뮬레이션.
 
+### 26. SmoothQuant PPL 측정 결과 및 calibration 샘플 효과 관찰
+
+**측정 결과** (Qwen3-0.6B, wikitext-2, sliding window stride=512 max_len=2048):
+
+| Scheme | demo (5 샘플) | milestone11 (128 샘플) |
+|--------|--------------:|----------------------:|
+| FP16 | 18.16 | 18.16 |
+| W4A16 RTN | 25.89 | 25.89 |
+| W8A8 static | 25.01 | 27.75 |
+| W8A8 dynamic | 18.48 | 18.48 |
+| W8A8 + SmoothQuant | **23.67** | (미측정) |
+
+**관찰 1 — refactor 회귀 없음**: W4A16, FP16, dynamic 모두 기존 측정값과 정확히 일치. modifier composition 리팩토링이 RTN 동작을 깨뜨리지 않음.
+
+**관찰 2 — SmoothQuant 효과**: 동일 calibration 조건(5 샘플)에서 W8A8 static 25.01 → SmoothQuant 23.67. **-1.34 개선**. per-tensor static의 본질적 한계 안에서 의미 있는 차이.
+
+**관찰 3 — calibration 샘플 효과 (비직관적)**: 같은 W8A8 static인데 128 샘플(27.75) > 5 샘플(25.01). MinMax observer는 본질적으로 outlier에 민감 — 더 큰 데이터셋에서 outlier에 더 많이 노출되어 per-tensor scale을 과도하게 넓게 잡는다.
+- **함의**: MinMax observer는 calibration sample을 늘려도 PPL이 개선되지 않을 수 있다. SmoothQuant이나 percentile/MSE observer가 본질 해결책.
+- 발표 자료에서 SmoothQuant 동기를 설명할 때 이 관찰을 함께 제시 가능.
+
 ### 작업 위치 (이 세션 마무리 기준)
 
 - 브랜치: `feature/smoothquant`
 - 28개 단위 테스트 통과 (24 기존 + 4 SmoothQuant)
 - demo.py에 5번째 케이스 (W8A8 + SmoothQuant) 추가
-- README/PROGRESS/road_map/context-notes 갱신 완료
-- **다음**: W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`) → README 검증 결과 표 행 채움.
+- README 검증 결과 표: 5 샘플 / 128 샘플 두 환경 분리 명시
+- **다음 후보**: M13 Multi-GPU / M6-D LLaMA 검증 / M6-B GPTQ / 본 브랜치 main 머지.

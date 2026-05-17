@@ -885,10 +885,15 @@ modifier.calibrate(model, dataloader, sequential=False)  # 기본: 전체 forwar
 modifier.calibrate(model, dataloader, sequential=True)   # 대형 모델: layer-by-layer
 ```
 
-### Milestone 6-D — 멀티모델 검증 (시간 허락 시)
+### Milestone 6-D — 멀티모델 검증 ✅ 완료 (TinyLlama-1.1B)
+
+> `meta-llama/Llama-3.2-1B`은 HF gated(접근 미승인) → 동일 `model_type=llama`인
+> `TinyLlama/TinyLlama-1.1B-Chat-v1.0`로 대체. 결과: 라이브러리 코드 0줄 수정으로
+> 4개 recipe 동작, SmoothQuant pair 44개 자동 탐색(RMSNorm, GQA 32:4), `lm_head` ignore.
+> 산출물: `demo.py --model` 인자, `notebooks/milestone6d_llama_validation.ipynb`.
 
 ```text
-LLaMA 계열 (meta-llama/Llama-3.2-1B) 에서 W8A8 / W4A16 동작 확인
+LLaMA 계열 에서 W8A8 / W4A16 동작 확인
 targets / ignore 패턴이 모델 아키텍처에 종속되지 않음을 검증
 SmoothQuant의 preceding norm layer 탐색이 LLaMA에서도 동작하는지 확인
 ```

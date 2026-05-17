@@ -549,13 +549,28 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **fix**: `calibrate()`에서 `mod.input_scale = scale.to(mod.weight.device)` (zp 동일). 단일 CPU/GPU 모두 안전.
 
-### 작업 위치 (2026-05-17 갱신 — M13)
+## 2026-05-17 — M6-D 멀티모델 검증
 
-- main: `149c994` (recipe preset PR #3까지 머지 완료). working tree에 M13 작업 uncommitted.
-  - uncommitted: `observer.py`(sync 4종), `modifiers/quantization.py`(sync 호출 + device 보정), `tests/test_observer_sync.py`(신규), `README`/`PROGRESS`/`road_map`/`context-notes`.
-- 32개 단위 테스트 통과 (30 + observer sync 2). 작업 브랜치 `feature/multi-gpu` 예정 (아직 생성 전).
+### 31. Llama-3.2-1B → TinyLlama-1.1B 대체
+
+**문제**: M6-D 타깃 `meta-llama/Llama-3.2-1B`이 HF gated이고 토큰에 접근 권한 없음(403).
+
+**결정**: `TinyLlama/TinyLlama-1.1B-Chat-v1.0`로 대체. `model_type=llama` — 같은 LLaMA 아키텍처(RMSNorm, GQA 32:4)라 "non-Qwen 아키텍처 검증" 목적은 동일하게 충족. 오히려 GQA 비율(8:1)이 Qwen3보다 커서 SmoothQuant GQA 경로를 더 강하게 실증.
+
+**검증 결과** (라이브러리 코드 0줄 수정):
+- `_find_smooth_pairs` 44개 페어 자동 탐색 (22층×2) — `input_layernorm`/`post_attention_layernorm` 이름 규칙이 LLaMA 공통이라 그대로 동작. attn 페어 dims `[(2048,2048),(2048,256),(2048,256)]` — GQA(q_proj out > k/v_proj out)가 페어에 그대로 반영.
+- `targets`/`ignore` model-agnostic — `lm_head`만 제외, 154개 Linear 교체.
+- 4개 recipe 모두 compress → generate 정상.
+
+**산출물**: `demo.py`에 `--model` 인자 추가(end-to-end 데모를 모델 비종속화), `notebooks/milestone6d_llama_validation.ipynb`(실행 결과 포함). 라이브러리 코드 변경 없음 — 이게 M6-D의 핵심 증거.
+
+### 작업 위치 (2026-05-17 갱신 — M6-D)
+
+- main: `dc9582a` (M13 PR #4까지 머지 완료). working tree에 M6-D 작업 uncommitted.
+  - uncommitted: `demo.py`(`--model` 인자), `notebooks/milestone6d_llama_validation.ipynb`(신규), `README`/`PROGRESS`/`road_map`/`context-notes`. 라이브러리 코드(`mini_compressor/`) 무변경.
+- 단위 테스트 32개 통과 (라이브러리 무변경이라 회귀 없음).
 
 ### 다음 작업
 
-- git: M13 작업을 `feature/multi-gpu` 브랜치로 커밋 → PR → main 머지.
-- 코드 후보: M6-D LLaMA-3.2-1B 멀티모델 검증 / M6-B GPTQ 실제 구현.
+- git: M6-D 작업을 `feature/llama-validation` 브랜치로 커밋 → PR → main 머지.
+- 코드 후보: M6-B GPTQ 실제 구현.

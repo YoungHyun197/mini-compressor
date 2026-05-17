@@ -176,16 +176,19 @@ layer 단위 GPU offload calibration
 
 ---
 
-### Milestone 6-D — 멀티모델 검증 (시간 허락 시)
+### Milestone 6-D — 멀티모델 검증 ✅ 완료 (TinyLlama-1.1B)
 ```
-LLaMA 계열에서 W8A8 / W4A16 동작 확인
+LLaMA 계열에서 recipe 동작 확인
 targets/ignore 패턴 model-agnostic 검증
 ```
+> `meta-llama/Llama-3.2-1B`은 HF gated(접근 미승인) → 동일 아키텍처(`model_type=llama`)인
+> `TinyLlama/TinyLlama-1.1B-Chat-v1.0`로 대체. 검증 가치 동일.
 
-- [ ] `meta-llama/Llama-3.2-1B` W8A8 RTN generate 확인
-- [ ] `meta-llama/Llama-3.2-1B` W4A16 RTN generate 확인
-- [ ] targets 패턴이 Qwen3/LLaMA 공통으로 동작함을 확인
-- [ ] SmoothQuant norm layer 탐색 (`smooth_norm_pattern` config) 적용
+- [x] TinyLlama-1.1B에서 `w4a16`/`w8a8`/`w8a8_dynamic`/`w8a8_smoothquant` 4종 compress → generate 확인
+- [x] `targets`/`ignore` 패턴이 Qwen3/LLaMA 공통 동작 — `lm_head` 제외, 154개 Linear 교체
+- [x] SmoothQuant `_find_smooth_pairs`가 LLaMA에서 44개 페어 자동 탐색 (RMSNorm, GQA 32:4)
+- [x] `demo.py`에 `--model` 인자 추가 — end-to-end 데모 model-agnostic
+- [x] `notebooks/milestone6d_llama_validation.ipynb` 검증 노트북 (실행 결과 포함)
 
 ---
 
@@ -382,18 +385,17 @@ demo.py 작성
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
 | Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
 | HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
-| Multi-model 검증 | 미진행 | Qwen3-0.6B 외 LLaMA 등 미확인 |
+| Multi-model 검증 | **완료** | TinyLlama-1.1B (LLaMA 아키텍처) — 라이브러리 코드 수정 없이 4 recipe 동작 |
 
 ---
 
 ## 현재 작업 위치
 
-> **Milestone 1–13 완료** (M6-A SmoothQuant + Recipe preset + M13 Multi-GPU observer sync 포함)
+> **Milestone 1–13 + M6-D 완료** (SmoothQuant + Recipe preset + M13 Multi-GPU observer sync + M6-D 멀티모델 검증)
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
 
 **다음 할 일.**
-1. Milestone 6-D: LLaMA-3.2-1B 멀티모델 검증
-2. Milestone 6-B: GPTQ 실제 구현
+1. Milestone 6-B: GPTQ 실제 구현
 
 ---
 

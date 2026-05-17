@@ -41,6 +41,9 @@ Thumbs.db
 *.log
 wandb/
 
+# Scratch
+tmp.txt
+
 # Distribution
 dist/
 build/

@@ -8,7 +8,7 @@ PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingF
 
 ## 특징
 
-- **One-click API** — `Compressor.from_scheme("w8a8").compress(model, dataloader)` 한 줄로 압축
+- **One-click API** — `Compressor.from_recipe("w8a8").compress(model, dataloader)` 한 줄로 압축
 - **HuggingFace 호환** — `safetensors` + compressed-tensors 포맷으로 저장·복원
 - **Fake Quantization** — float16 weight를 유지한 채 quantization 오차 시뮬레이션 (런타임 검증 전 정확도 평가 단계)
 - **다양한 Calibration** — MinMax, Percentile, MSE, KL-Divergence observer 지원
@@ -74,7 +74,7 @@ from mini_compressor import Compressor
 model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen3-0.6B", torch_dtype="float16")
 tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
-compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
+compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
 compressor.compress(model)          # W4A16은 RTN — calibration 데이터 불필요
 compressor.save(model, "./qwen3-w4a16", tokenizer=tokenizer)
 ```
@@ -82,7 +82,7 @@ compressor.save(model, "./qwen3-w4a16", tokenizer=tokenizer)
 ### W8A8 — weight + activation INT8
 
 ```python
-compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
+compressor = Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"])
 
 calib_inputs = [
     tokenizer(text, return_tensors="pt")
@@ -96,13 +96,13 @@ compressor.save(model, "./qwen3-w8a8", tokenizer=tokenizer)
 
 ```python
 # Linear만 양자화하고 싶을 때 (기본값과 동일)
-compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
+compressor = Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"])
 
 # 특정 레이어만 지정하고 싶을 때 (fnmatch 패턴 지원)
-compressor = Compressor.from_scheme("w8a8", targets=["model.layers.*.self_attn.*"])
+compressor = Compressor.from_recipe("w8a8", targets=["model.layers.*.self_attn.*"])
 
 # targets=None (기본값): 모든 nn.Linear 대상
-compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
+compressor = Compressor.from_recipe("w8a8", ignore=["lm_head"])
 ```
 
 `targets`와 `ignore`는 독립적으로 동작하며 `ignore`가 우선합니다. `targets=None`이면 모든 `nn.Linear`가 대상입니다.
@@ -112,22 +112,26 @@ compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
 W8A8 static의 정확도 손실은 주로 activation outlier에서 옵니다. SmoothQuant는 outlier를 weight 쪽으로 옮겨 per-tensor int8 양자화 오차를 줄입니다.
 
 ```python
-from mini_compressor import (
-    Compressor,
-    QuantizationModifier,
-    SmoothQuantModifier,
-    W8A8,
-)
+from mini_compressor import Compressor
+
+compressor = Compressor.from_recipe("w8a8_smoothquant", ignore=["lm_head"])
+compressor.compress(model, dataloader=calib_inputs)
+compressor.save(model, "./qwen3-w8a8-smq", tokenizer=tokenizer)
+```
+
+`from_recipe`는 여러 modifier가 chain된 알고리즘 파이프라인을 한 줄 preset으로 노출합니다. `alpha` 등 세부 파라미터를 직접 제어하려면 modifier list를 그대로 구성합니다.
+
+```python
+from mini_compressor import Compressor, QuantizationModifier, SmoothQuantModifier, W8A8
 
 compressor = Compressor([
     SmoothQuantModifier(alpha=0.5),
     QuantizationModifier(W8A8, targets=["Linear"], ignore=["lm_head"]),
 ])
 compressor.compress(model, dataloader=calib_inputs)
-compressor.save(model, "./qwen3-w8a8-smq", tokenizer=tokenizer)
 ```
 
-`Compressor`는 modifier list를 받아 각 modifier에 `initialize → calibrate → finalize`를 순차 호출합니다. SmoothQuant + W8A8, AWQ + W4A16 같은 알고리즘 chain을 list 순서로 자연스럽게 표현합니다.
+`Compressor`는 modifier list를 받아 각 modifier에 `initialize → calibrate → finalize`를 순차 호출합니다. SmoothQuant + W8A8, AWQ + W4A16 같은 알고리즘 chain을 list 순서로 자연스럽게 표현하며, `from_recipe`는 그 위에 얹은 선언적 진입점입니다.
 
 ### 저장된 모델 불러오기
 
@@ -141,18 +145,21 @@ model = load_pretrained("./qwen3-w8a8")
 
 ---
 
-## 지원 Scheme
+## 지원 Recipe
 
-| Scheme | Weight | Activation | Calibration |
-|--------|--------|------------|-------------|
-| `w4a16` | INT4, per-group (group\_size=128), symmetric | — | RTN (불필요) |
-| `w8a8` | INT8, per-channel, symmetric | INT8, per-tensor, asymmetric | MinMax (static) |
-| `w8a8_dynamic` | INT8, per-channel, symmetric | INT8, per-token, symmetric | 불필요 (런타임 계산) |
+`Compressor.from_recipe(name)`이 유일한 preset 진입점입니다. 단일 RTN scheme도, SmoothQuant 같은 알고리즘 chain도 recipe 이름 하나로 펼쳐집니다.
 
-`w8a8_dynamic` 사용 예시.
+| Recipe | 구성 | 양자화 포맷 |
+|--------|------|-------------|
+| `w4a16` | W4A16 RTN | INT4 weight-only, per-group(128), symmetric |
+| `w8a8` | W8A8 RTN | INT8 W/A — weight per-channel, activation per-tensor MinMax static |
+| `w8a8_dynamic` | W8A8 dynamic RTN | INT8 W/A — activation per-token 런타임 scale |
+| `w8a8_smoothquant` | SmoothQuant(α=0.5) → W8A8 RTN | W8A8 + activation outlier를 weight로 흡수 |
+
+`w8a8_dynamic` 사용 예시 — dynamic scheme은 calibration이 불필요합니다.
 
 ```python
-compressor = Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"])
+compressor = Compressor.from_recipe("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"])
 compressor.compress(model)  # calibration 데이터 불필요
 ```
 
@@ -293,7 +300,7 @@ pytest tests/ -v
 | `test_modifier.py` | QuantizationModifier initialize / calibrate / finalize, scale shape |
 | `test_smoothquant.py` | SmoothQuant pair 탐색, 등가 변환 수치 검증, Compressor chain 통합 |
 | `test_serialize.py` | scheme ↔ dict 변환 round-trip, 파일 생성 확인 |
-| `test_compressor.py` | Compressor API, from\_scheme, compress, save |
+| `test_compressor.py` | Compressor API, from\_scheme, from\_recipe, compress, save |
 
 ---
 
@@ -306,8 +313,9 @@ pytest tests/ -v
 - [x] compressed-tensors 호환 save / load + round-trip 일치 확인 (Qwen3-0.6B)
 - [x] Compressor one-click API + modifier composition (BaseModifier + per-algorithm class)
 - [x] **SmoothQuant** (`SmoothQuantModifier`) — activation 분포 평탄화로 W8A8 정확도 향상
+- [x] Recipe preset (`Compressor.from_recipe`) — modifier chain을 이름 한 줄로 노출
 - [x] End-to-End 데모 (`demo.py`) — 네 scheme (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant) compress → generate → save → load 전체 흐름
-- [x] 단위 테스트 27개, CI 통과
+- [x] 단위 테스트 30개, CI 통과
 
 ### 진행 중
 

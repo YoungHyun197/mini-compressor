@@ -124,6 +124,21 @@ Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)]) chain 동작
   - W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 (-1.34 개선, 5 샘플 calibration)
   - refactor 회귀 확인 — W4A16/FP16/dynamic 기존 측정값과 일치
 
+### Milestone 6-A 후속 — Recipe preset 레이어 ✅ 완료
+
+```
+composition 패턴 위에 Quark식 선언적 preset 레이어 추가
+모든 preset을 단일 진입점 from_recipe + RECIPE_REGISTRY로 통일 (from_scheme 제거)
+```
+변경 파일: `mini_compressor/recipes.py` (신규), `compressor.py`, `__init__.py`, `tests/test_compressor.py`, `demo.py`
+
+- [x] `recipes.py` 신규 — `RECIPE_REGISTRY` (이름 → modifier 리스트 factory)
+- [x] `Compressor.from_recipe(name, targets, ignore)` — 유일한 preset 진입점
+- [x] 단일 RTN(`w4a16`/`w8a8`/`w8a8_dynamic`)도 modifier 1개짜리 recipe로 흡수
+- [x] `w8a8_smoothquant` recipe — `[SmoothQuantModifier(0.5), QuantizationModifier(W8A8)]`
+- [x] `Compressor.from_scheme` 제거 — 진입점 중복 해소 (`SCHEME_REGISTRY`는 `serialize.py`용 카탈로그로 잔존)
+- [x] `__init__.py` export 갱신, `demo.py` / `tests` `from_recipe` 마이그레이션 (단위 테스트 30개 통과)
+
 ---
 
 ### Milestone 6-B — GPTQ (시간 허락 시)
@@ -354,7 +369,7 @@ demo.py 작성
 | 기능 | 상태 | 비고 |
 |------|------|------|
 | per-token dynamic quantization | **구현 완료** | `W8A8_DYNAMIC` preset — `granularity="per_token"` + `dynamic=True`. 런타임에 토큰별 scale 계산, calibration 불필요 |
-| **SmoothQuant** | **구현 완료** | `SmoothQuantModifier` — `Compressor([SmoothQuantModifier(0.5), QuantizationModifier(W8A8)])` 형태로 사용. activation 분포 평탄화 |
+| **SmoothQuant** | **구현 완료** | `SmoothQuantModifier` — `Compressor.from_recipe("w8a8_smoothquant")` 또는 modifier list 직접 구성. activation 분포 평탄화 |
 | real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
 | GPTQ | stub 있음 | `GPTQModifier` — NotImplementedError |
 | AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
@@ -368,13 +383,12 @@ demo.py 작성
 
 ## 현재 작업 위치
 
-> **Milestone 1–12 완료** (M6-A SmoothQuant 포함, `feature/smoothquant` 브랜치)
+> **Milestone 1–12 완료** (M6-A SmoothQuant + Recipe preset 레이어 포함)
 
 **다음 할 일.**
-1. W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`) → README 표 업데이트
-2. Milestone 13: Multi-GPU 지원 (`BaseObserver.sync()` all-reduce 구현)
-3. Milestone 6-D: LLaMA-3.2-1B 멀티모델 검증
-4. Milestone 6-B: GPTQ 실제 구현
+1. Milestone 13: Multi-GPU 지원 (`BaseObserver.sync()` all-reduce 구현)
+2. Milestone 6-D: LLaMA-3.2-1B 멀티모델 검증
+3. Milestone 6-B: GPTQ 실제 구현
 
 ---
 

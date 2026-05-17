@@ -14,9 +14,6 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from mini_compressor import (
     Compressor,
-    QuantizationModifier,
-    SmoothQuantModifier,
-    W8A8,
     load_pretrained,
 )
 
@@ -95,7 +92,7 @@ def main():
     # ── 2. W4A16 ─────────────────────────────────────────────────────────────
     print("\n[2/5] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
     model_w4 = load_model()
-    Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"]).compress(model_w4)
+    Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"]).compress(model_w4)
     text_w4 = generate(model_w4, tokenizer)
     print(f"  {text_w4}")
     if args.ppl:
@@ -105,7 +102,7 @@ def main():
 
     if args.save:
         print(f"\n  → {args.save} 에 저장 중...")
-        compressor_w4 = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
+        compressor_w4 = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
         compressor_w4.save(model_w4, args.save, tokenizer=tokenizer)
         print(f"  저장 파일: {os.listdir(args.save)}")
 
@@ -134,7 +131,7 @@ def main():
         {k: v.to(DEVICE) for k, v in tokenizer(t, return_tensors="pt").items()}
         for t in calib_texts
     ]
-    Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"]).compress(
+    Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"]).compress(
         model_w8, dataloader=calib_inputs
     )
     text_w8 = generate(model_w8, tokenizer)
@@ -149,7 +146,7 @@ def main():
     # ── 4. W8A8 dynamic ───────────────────────────────────────────────────────
     print("\n[4/5] W8A8 dynamic — per-token INT8 (calibration 불필요)")
     model_dyn = load_model()
-    Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"]).compress(model_dyn)
+    Compressor.from_recipe("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"]).compress(model_dyn)
     text_dyn = generate(model_dyn, tokenizer)
     print(f"  {text_dyn}")
     if args.ppl:
@@ -162,11 +159,8 @@ def main():
     # ── 5. W8A8 + SmoothQuant ─────────────────────────────────────────────────
     print("\n[5/5] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 static")
     model_sq = load_model()
-    Compressor(
-        [
-            SmoothQuantModifier(alpha=0.5),
-            QuantizationModifier(W8A8, targets=["Linear"], ignore=["lm_head"]),
-        ]
+    Compressor.from_recipe(
+        "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]
     ).compress(model_sq, dataloader=calib_inputs)
     text_sq = generate(model_sq, tokenizer)
     print(f"  {text_sq}")

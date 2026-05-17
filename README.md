@@ -268,6 +268,19 @@ W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 — 같은 calibration 조건에�
 [W8A8 load]    The key advantage of quantization is that it can reduce the number of bits required... ✓ 일치
 ```
 
+### 멀티모델 검증 — TinyLlama-1.1B (LLaMA 아키텍처)
+
+`notebooks/milestone6d_llama_validation.ipynb` — Qwen3가 아닌 아키텍처에서도 **라이브러리 코드 수정 없이** 동작함을 검증.
+
+| 검증 항목 | 결과 |
+|-----------|------|
+| 모델 | `TinyLlama/TinyLlama-1.1B-Chat-v1.0` (`model_type=llama`, 22층, GQA 32:4) |
+| SmoothQuant pair 자동 탐색 | 44개 (22층 × 2) — RMSNorm 기반, GQA 구조 그대로 반영 |
+| `targets`/`ignore` | model-agnostic — `lm_head` 제외, 154개 Linear 교체 |
+| recipe end-to-end | `w4a16`/`w8a8`/`w8a8_dynamic`/`w8a8_smoothquant` 4종 모두 compress → generate 정상 |
+
+라이브러리 코드는 한 줄도 바뀌지 않았습니다 — `targets`/`ignore`가 fnmatch 패턴 기반이고 SmoothQuant pair 탐색이 표준 norm 이름(`input_layernorm` 등)을 쓰기 때문입니다.
+
 ---
 
 ## 데모 실행
@@ -281,6 +294,9 @@ python demo.py --save /tmp/demo_save
 
 # wikitext-2 perplexity 측정 추가 (시간 소요)
 python demo.py --ppl
+
+# 다른 모델로 실행 (기본: Qwen/Qwen3-0.6B) — 아키텍처 비종속 확인
+python demo.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0
 
 # 전체 옵션 동시 실행
 python demo.py --save /tmp/demo_save --ppl
@@ -317,6 +333,7 @@ pytest tests/ -v
 - [x] Recipe preset (`Compressor.from_recipe`) — modifier chain을 이름 한 줄로 노출
 - [x] End-to-End 데모 (`demo.py`) — 네 scheme (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant) compress → generate → save → load 전체 흐름
 - [x] **Multi-GPU observer sync** (`BaseObserver.sync()`) — all_reduce / all_gather rank 동기화, gloo 2-proc 검증
+- [x] **멀티모델 검증** — TinyLlama-1.1B (LLaMA 아키텍처)에서 라이브러리 코드 수정 없이 동작 확인
 - [x] 단위 테스트 32개, CI 통과
 
 ### 진행 중
@@ -329,7 +346,6 @@ pytest tests/ -v
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
 - [ ] **실 2-GPU 실측** — observer sync는 구현·검증 완료(gloo 2-proc). `device_map="auto"` 물리 cross-GPU 배치와 Tensor Parallelism은 하드웨어 한계로 미실측
 - [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push
-- [ ] **Multi-model 검증** — LLaMA-3.2-1B 등 다른 아키텍처에서 동작 확인
 - [ ] **W8A8 + SmoothQuant perplexity 측정** — `python demo.py --ppl` 로 측정 후 README 표 갱신
 
 ---

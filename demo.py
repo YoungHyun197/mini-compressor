@@ -24,8 +24,8 @@ DEVICE   = "cuda" if torch.cuda.is_available() else "cpu"
 
 # ── 유틸 ──────────────────────────────────────────────────────────────────────
 
-def load_model():
-    model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float16).to(DEVICE)
+def load_model(model_id):
+    model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=torch.float16).to(DEVICE)
     model.eval()
     return model
 
@@ -61,11 +61,12 @@ def compute_perplexity(model, encodings, stride=512, max_len=2048):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", default=MODEL_ID, help=f"HuggingFace 모델 ID (기본: {MODEL_ID})")
     parser.add_argument("--save", metavar="DIR",  help="W4A16 저장 후 load_pretrained round-trip 확인")
     parser.add_argument("--ppl",  action="store_true", help="wikitext-2 perplexity 측정")
     args = parser.parse_args()
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    tokenizer = AutoTokenizer.from_pretrained(args.model)
     ppl_results = {}
 
     # --ppl 시 encodings를 미리 준비 (모델마다 재사용)
@@ -79,7 +80,7 @@ def main():
 
     # ── 1. FP16 baseline ──────────────────────────────────────────────────────
     print("\n[1/5] FP16 baseline")
-    model = load_model()
+    model = load_model(args.model)
     text_fp = generate(model, tokenizer)
     print(f"  {text_fp}")
     if args.ppl:
@@ -91,7 +92,7 @@ def main():
 
     # ── 2. W4A16 ─────────────────────────────────────────────────────────────
     print("\n[2/5] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
-    model_w4 = load_model()
+    model_w4 = load_model(args.model)
     Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"]).compress(model_w4)
     text_w4 = generate(model_w4, tokenizer)
     print(f"  {text_w4}")
@@ -119,7 +120,7 @@ def main():
 
     # ── 3. W8A8 static ────────────────────────────────────────────────────────
     print("\n[3/5] W8A8 static — weight+activation INT8 (MinMax calibration)")
-    model_w8 = load_model()
+    model_w8 = load_model(args.model)
     calib_texts = [
         "The quick brown fox jumps over the lazy dog.",
         "Quantization reduces model size by representing weights in lower precision.",
@@ -145,7 +146,7 @@ def main():
 
     # ── 4. W8A8 dynamic ───────────────────────────────────────────────────────
     print("\n[4/5] W8A8 dynamic — per-token INT8 (calibration 불필요)")
-    model_dyn = load_model()
+    model_dyn = load_model(args.model)
     Compressor.from_recipe("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"]).compress(model_dyn)
     text_dyn = generate(model_dyn, tokenizer)
     print(f"  {text_dyn}")
@@ -158,7 +159,7 @@ def main():
 
     # ── 5. W8A8 + SmoothQuant ─────────────────────────────────────────────────
     print("\n[5/5] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 static")
-    model_sq = load_model()
+    model_sq = load_model(args.model)
     Compressor.from_recipe(
         "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]
     ).compress(model_sq, dataloader=calib_inputs)

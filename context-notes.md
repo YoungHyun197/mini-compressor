@@ -482,10 +482,30 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - **함의**: MinMax observer는 calibration sample을 늘려도 PPL이 개선되지 않을 수 있다. SmoothQuant이나 percentile/MSE observer가 본질 해결책.
 - 발표 자료에서 SmoothQuant 동기를 설명할 때 이 관찰을 함께 제시 가능.
 
-### 작업 위치 (이 세션 마무리 기준)
+### 작업 위치 (이 세션 마무리 기준 — 2026-05-15 야간)
 
-- 브랜치: `feature/smoothquant`
-- 28개 단위 테스트 통과 (24 기존 + 4 SmoothQuant)
-- demo.py에 5번째 케이스 (W8A8 + SmoothQuant) 추가
-- README 검증 결과 표: 5 샘플 / 128 샘플 두 환경 분리 명시
-- **다음 후보**: M13 Multi-GPU / M6-D LLaMA 검증 / M6-B GPTQ / 본 브랜치 main 머지.
+- 브랜치: `feature/smoothquant` — 5개 커밋 푸시 완료, working tree 깨끗 (`tmp.txt` 잔여만 untracked).
+  - `af1901b` refactor: modifiers/ 패키지 분리
+  - `d30e1ec` feat(smoothquant): SmoothQuantModifier 실구현
+  - `cfae353` docs: M6-A 4문서 동기화
+  - `3e7fa86` fix(smoothquant): LayerNorm bias 흡수
+  - `011f21f` docs(ppl): W8A8 + SmoothQuant PPL 측정 결과 반영
+- 28개 단위 테스트 통과 (24 기존 + 4 SmoothQuant). PPL 측정 완료.
+
+### 다음 작업 (사용자 선택: Option A — feature/smoothquant → main PR 머지)
+
+내일 `claude -c` 재개 시 우선순위 1번. 진행 순서.
+
+1. `rm mini_compressor/tmp.txt` (잔여 파일 정리, untracked).
+2. GitHub 웹에서 PR 생성: https://github.com/YoungHyun197/mini-compressor/pull/new/feature/smoothquant
+3. PR 본문은 직전 세션 마지막에 제공한 템플릿 사용 (요약 + 측정 결과 표 + Test plan).
+4. **머지 방식: Create a merge commit** (5개 커밋 히스토리 보존 — 협업 시뮬레이션 의도).
+5. 로컬 main 동기화: `git checkout main && git pull && git branch -d feature/smoothquant && git push origin --delete feature/smoothquant`.
+
+### A 머지 이후 후보 milestone
+
+- M13 Multi-GPU — `BaseObserver.sync()` all-reduce, `device_map="auto"` 검증.
+- M6-D LLaMA-3.2-1B 멀티모델 검증 — README "아키텍처 독립" 주장 실증.
+- M6-B GPTQ 실제 구현 — W4A16 PPL 개선.
+
+각 항목 시작 시 새 feature 브랜치 (`feature/multi-gpu`, `feature/llama-validation`, `feature/gptq`) 권장.

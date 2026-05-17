@@ -119,9 +119,12 @@ class QuantizationModifier(BaseModifier):
         spec = self.scheme.activation
         for mod in self.model.modules():
             if isinstance(mod, FakeQuantLinear) and mod.input_observer is not None:
+                mod.input_observer.sync()  # multi-GPU: rank 간 통계 동기화 (단일 GPU에선 no-op)
                 scale, zp = mod.input_observer.compute_scale_zp(spec)
-                mod.input_scale = scale
-                mod.input_zero_point = zp
+                # scale/zp가 weight.device를 따라가도록 보정 — Percentile 등은 _data를
+                # CPU로 모아 결과가 CPU에 남을 수 있음 (device_map="auto" 호환).
+                mod.input_scale = scale.to(mod.weight.device)
+                mod.input_zero_point = zp.to(mod.weight.device)
 
     def finalize(self) -> None:
         """observer 제거, scale buffer만 남김."""

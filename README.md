@@ -300,7 +300,8 @@ pytest tests/ -v
 | `test_modifier.py` | QuantizationModifier initialize / calibrate / finalize, scale shape |
 | `test_smoothquant.py` | SmoothQuant pair 탐색, 등가 변환 수치 검증, Compressor chain 통합 |
 | `test_serialize.py` | scheme ↔ dict 변환 round-trip, 파일 생성 확인 |
-| `test_compressor.py` | Compressor API, from\_scheme, from\_recipe, compress, save |
+| `test_compressor.py` | Compressor API, from\_recipe, compress, save |
+| `test_observer_sync.py` | gloo 2-프로세스 observer sync 검증 (all\_reduce / all\_gather) |
 
 ---
 
@@ -315,7 +316,8 @@ pytest tests/ -v
 - [x] **SmoothQuant** (`SmoothQuantModifier`) — activation 분포 평탄화로 W8A8 정확도 향상
 - [x] Recipe preset (`Compressor.from_recipe`) — modifier chain을 이름 한 줄로 노출
 - [x] End-to-End 데모 (`demo.py`) — 네 scheme (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant) compress → generate → save → load 전체 흐름
-- [x] 단위 테스트 30개, CI 통과
+- [x] **Multi-GPU observer sync** (`BaseObserver.sync()`) — all_reduce / all_gather rank 동기화, gloo 2-proc 검증
+- [x] 단위 테스트 32개, CI 통과
 
 ### 진행 중
 
@@ -325,7 +327,7 @@ pytest tests/ -v
 - [ ] **AWQ** (`AWQModifier`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
 - [ ] **Sequential calibration** (`QuantizationModifier.calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
-- [ ] **Multi-GPU 지원** — `BaseObserver.sync()` all-reduce 동기화, `device_map="auto"` 호환 검증 (rank 0 저장 가드만 구현됨)
+- [ ] **실 2-GPU 실측** — observer sync는 구현·검증 완료(gloo 2-proc). `device_map="auto"` 물리 cross-GPU 배치와 Tensor Parallelism은 하드웨어 한계로 미실측
 - [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push
 - [ ] **Multi-model 검증** — LLaMA-3.2-1B 등 다른 아키텍처에서 동작 확인
 - [ ] **W8A8 + SmoothQuant perplexity 측정** — `python demo.py --ppl` 로 측정 후 README 표 갱신

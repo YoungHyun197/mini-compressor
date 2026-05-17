@@ -7,5 +7,6 @@ from .modifiers import (
     QuantizationModifier,
     SmoothQuantModifier,
 )
+from .recipes import RECIPE_REGISTRY
 from .schemes import W8A8, W4A16, W8A8_DYNAMIC, QuantizationScheme, QuantizationSpec, SCHEME_REGISTRY
 from .serialize import load_pretrained, save_pretrained

@@ -6,7 +6,7 @@ from typing import Iterable, List, Optional
 import torch.nn as nn
 
 from .modifiers import BaseModifier, QuantizationModifier
-from .schemes import SCHEME_REGISTRY
+from .recipes import RECIPE_REGISTRY
 from .serialize import save_pretrained
 
 
@@ -14,10 +14,11 @@ class Compressor:
     """modifier list를 받아 각 modifier에 initialize → calibrate → finalize를 순차 호출한다.
 
     Usage:
-        # 단일 RTN (기존 호환)
-        compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
+        # recipe preset 한 줄 — 단일 RTN도, 알고리즘 chain도 recipe 이름으로
+        compressor = Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"])
+        compressor = Compressor.from_recipe("w8a8_smoothquant", ignore=["lm_head"])
 
-        # SmoothQuant + W8A8 RTN chain (modifier list 직접 구성)
+        # modifier list 직접 구성 (alpha 등 세부 제어)
         compressor = Compressor([
             SmoothQuantModifier(alpha=0.5),
             QuantizationModifier(scheme=W8A8, targets=["Linear"], ignore=["lm_head"]),
@@ -33,20 +34,22 @@ class Compressor:
         self.modifiers = modifiers
 
     @classmethod
-    def from_scheme(
+    def from_recipe(
         cls,
         name: str,
         targets: Optional[List[str]] = None,
         ignore: Optional[List[str]] = None,
     ) -> "Compressor":
-        """SCHEME_REGISTRY 이름으로 단일 QuantizationModifier를 감싼 Compressor를 생성한다.
+        """RECIPE_REGISTRY 이름으로 modifier 파이프라인을 펼쳐 Compressor를 생성한다.
 
-        backward compatibility: 기존 사용처는 그대로 동작한다.
-        새 형태(modifier list 직접 전달)를 쓰려면 Compressor([...])로 호출한다.
+        Compressor의 유일한 preset 진입점이다. 단일 RTN scheme은 modifier 1개짜리
+        recipe로, SmoothQuant 같은 알고리즘은 여러 modifier가 chain된 recipe로 —
+        composition 패턴 위에 얹은 선언적 진입점이다. targets / ignore는 recipe
+        내부의 QuantizationModifier로 전달된다.
         """
-        if name not in SCHEME_REGISTRY:
-            raise ValueError(f"Unknown scheme '{name}'. Available: {list(SCHEME_REGISTRY)}")
-        return cls([QuantizationModifier(SCHEME_REGISTRY[name], targets=targets, ignore=ignore)])
+        if name not in RECIPE_REGISTRY:
+            raise ValueError(f"Unknown recipe '{name}'. Available: {list(RECIPE_REGISTRY)}")
+        return cls(RECIPE_REGISTRY[name](targets, ignore))
 
     def compress(
         self,

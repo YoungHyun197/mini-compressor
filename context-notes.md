@@ -482,30 +482,60 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - **함의**: MinMax observer는 calibration sample을 늘려도 PPL이 개선되지 않을 수 있다. SmoothQuant이나 percentile/MSE observer가 본질 해결책.
 - 발표 자료에서 SmoothQuant 동기를 설명할 때 이 관찰을 함께 제시 가능.
 
-### 작업 위치 (이 세션 마무리 기준 — 2026-05-15 야간)
+---
 
-- 브랜치: `feature/smoothquant` — 5개 커밋 푸시 완료, working tree 깨끗 (`tmp.txt` 잔여만 untracked).
-  - `af1901b` refactor: modifiers/ 패키지 분리
-  - `d30e1ec` feat(smoothquant): SmoothQuantModifier 실구현
-  - `cfae353` docs: M6-A 4문서 동기화
-  - `3e7fa86` fix(smoothquant): LayerNorm bias 흡수
-  - `011f21f` docs(ppl): W8A8 + SmoothQuant PPL 측정 결과 반영
-- 28개 단위 테스트 통과 (24 기존 + 4 SmoothQuant). PPL 측정 완료.
+## 2026-05-17 — Recipe preset 레이어
 
-### 다음 작업 (사용자 선택: Option A — feature/smoothquant → main PR 머지)
+### 27. from_recipe + RECIPE_REGISTRY — composition 위의 선언적 preset
 
-내일 `claude -c` 재개 시 우선순위 1번. 진행 순서.
+**문제**: SmoothQuant 도입 후 RTN 경로는 `from_scheme("w8a8")` 한 줄 preset이 유지되지만, SmoothQuant는 `Compressor([SmoothQuantModifier(0.5), QuantizationModifier(W8A8)])` 조립형으로만 닿는다. Quark식 "이름만 알면 되는" 낮은 진입장벽이 SmoothQuant까지 확장되지 않은 갭.
 
-1. `rm mini_compressor/tmp.txt` (잔여 파일 정리, untracked).
-2. GitHub 웹에서 PR 생성: https://github.com/YoungHyun197/mini-compressor/pull/new/feature/smoothquant
-3. PR 본문은 직전 세션 마지막에 제공한 템플릿 사용 (요약 + 측정 결과 표 + Test plan).
-4. **머지 방식: Create a merge commit** (5개 커밋 히스토리 보존 — 협업 시뮬레이션 의도).
-5. 로컬 main 동기화: `git checkout main && git pull && git branch -d feature/smoothquant && git push origin --delete feature/smoothquant`.
+**결정**: composition 패턴 위에 선언적 preset 레이어를 얹는다. preset(declarative)과 composition(조립)은 배타가 아니라 레이어 관계 — llm-compressor도 named recipe가 내부에서 modifier 리스트로 펼쳐진다.
 
-### A 머지 이후 후보 milestone
+| 레이어 | 진입점 | 다루는 것 |
+|--------|--------|-----------|
+| 선언 (declarative) | `from_recipe(name)` / `from_scheme(name)` | 이름 |
+| 조립 (composition) | `Compressor([modifier, ...])` | modifier 리스트 |
 
+**구현**:
+- `recipes.py` 신규 — `RECIPE_REGISTRY: Dict[str, RecipeFactory]`. factory는 `(targets, ignore) → List[BaseModifier]`. modifier가 hook·통계 등 내부 상태를 가지므로 **호출마다 새 인스턴스 생성** (registry 값은 미리 만든 instance가 아니라 callable).
+- `Compressor.from_recipe(name, targets, ignore)` — `from_scheme`과 나란히. targets/ignore는 recipe 내부 QuantizationModifier로 전달.
+- `scheme`(수치 포맷, SCHEME_REGISTRY)과 `recipe`(알고리즘 파이프라인, RECIPE_REGISTRY)를 별도 레지스트리로 분리 — 책임 분리 유지.
+- 현재 recipe: `w8a8_smoothquant` 1개. 알고리즘이 늘면 항목 추가.
+
+**근거**: 면접 질문 "SmoothQuant 도입으로 Quark식 preset 장점이 사라졌나"의 답 — 사라진 게 아니라 확장 안 했던 갭이고 레지스트리 하나로 메워진다. composition을 택해도 declarative preset과 양립한다는 걸 코드로 입증.
+
+### 28. from_scheme 제거 — preset 진입점을 from_recipe 하나로 통일
+
+> #27은 `from_scheme`과 `from_recipe`를 나란히 뒀으나, 아래에서 진입점을 하나로 통일하며 `from_scheme`을 제거함. #27의 "별도 레지스트리로 분리" 부분은 이 결정으로 갱신됨.
+
+**배경**: #27 직후, "값이 늘어날 때 scheme/recipe 두 진입점이 scalable한가" 검토.
+
+**진단**: 중복은 "두 레지스트리"가 아니라 "두 진입점"에 있었다. `SCHEME_REGISTRY`가 (1) scheme 카탈로그 (2) 진입점 디스패치 두 역할을 겸했고, (2)가 `from_recipe`와 겹쳤다.
+
+**결정**: 진입점을 `from_recipe` 하나로 통일, `from_scheme` 제거.
+- `RECIPE_REGISTRY`에 단일 RTN(`w4a16`/`w8a8`/`w8a8_dynamic`)을 modifier 1개짜리 recipe로 추가 (`_rtn(scheme)` factory helper).
+- `SCHEME_REGISTRY`(dict)와 `W8A8` 등 scheme 객체는 잔존 — `serialize.py`가 scheme→name 매칭(`serialize.py:80`)에 쓰는 데이터 카탈로그. 진입점 역할만 벗음.
+- scheme = recipe 내부의 수치 포맷 building block, recipe = 유일한 사용자 진입점.
+
+**근거**: 값이 늘어도 진입점은 영원히 하나 → API 표면적 불변, 이름 충돌 불가, "이건 scheme이냐 recipe냐" 판단을 사용자에게 안 떠넘김. llm-compressor도 recipe가 진입점, quantization config는 modifier 내부 부품인 구조.
+
+**마이그레이션**: `demo.py`(4곳), `tests/test_compressor.py`(5곳 + `test_from_scheme_unknown_raises` 제거), README → `from_recipe`. 단위 테스트 30개 통과.
+
+**미수정**: `notebooks/milestone8_round_trip.ipynb`·`milestone11_perplexity.ipynb`은 `from_scheme`을 쓰지만 과거 실행 기록(출력 보존)이라 손대지 않음 — 재실행 시점에 갱신.
+
+### 작업 위치 (2026-05-17 갱신)
+
+- 브랜치: `feature/smoothquant` — 커밋 5개 푸시됨 + recipe preset 작업이 working tree에 uncommitted.
+  - 푸시된 5커밋: `af1901b` refactor / `d30e1ec` feat(smoothquant) / `cfae353` docs / `3e7fa86` fix(bias) / `011f21f` docs(ppl).
+  - uncommitted: recipe preset 레이어 + 진입점 `from_recipe` 통일 (`recipes.py` 신규, `compressor.py`, `__init__.py`, `tests/test_compressor.py`, `demo.py`, `README.md`) + 문서 동기화 (decision #27·#28).
+- 30개 단위 테스트 통과. git PR 머지는 사용자가 보류 중.
+
+### 다음 작업
+
+git 관련은 사용자 보류 중. 코드 작업 후보 (사용자 선택 대기).
 - M13 Multi-GPU — `BaseObserver.sync()` all-reduce, `device_map="auto"` 검증.
 - M6-D LLaMA-3.2-1B 멀티모델 검증 — README "아키텍처 독립" 주장 실증.
 - M6-B GPTQ 실제 구현 — W4A16 PPL 개선.
 
-각 항목 시작 시 새 feature 브랜치 (`feature/multi-gpu`, `feature/llama-validation`, `feature/gptq`) 권장.
+git 작업 (보류): `feature/smoothquant` → main PR 머지 (Option A, `gh` CLI는 `~/.local/bin`에 설치 완료). 머지 후 각 신규 작업은 새 feature 브랜치 권장.

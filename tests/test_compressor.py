@@ -1,4 +1,4 @@
-# Compressor API 테스트 — from_scheme / compress / save round-trip
+# Compressor API 테스트 — from_recipe / compress / save round-trip
 import os
 import tempfile
 
@@ -6,7 +6,7 @@ import pytest
 import torch
 import torch.nn as nn
 
-from mini_compressor import Compressor
+from mini_compressor import Compressor, QuantizationModifier, SmoothQuantModifier
 from mini_compressor.fake_quant_linear import FakeQuantLinear
 from mini_compressor.schemes import W8A8, W4A16, W8A8_DYNAMIC
 
@@ -27,14 +27,9 @@ class _TinyLM(nn.Module):
         save_file(self.state_dict(), os.path.join(save_dir, "model.safetensors"))
 
 
-def test_from_scheme_unknown_raises():
-    with pytest.raises(ValueError, match="Unknown scheme"):
-        Compressor.from_scheme("nonexistent")
-
-
 def test_compress_w4a16_replaces_linear():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
+    compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)
 
     assert isinstance(model.proj, FakeQuantLinear), "proj은 FakeQuantLinear로 교체되어야 함"
@@ -44,7 +39,7 @@ def test_compress_w4a16_replaces_linear():
 
 def test_compress_w4a16_scale_shape():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
+    compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)
 
     proj = model.proj
@@ -55,7 +50,7 @@ def test_compress_w4a16_scale_shape():
 
 def test_compress_w8a8_with_calibration():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w8a8", targets=["Linear"], ignore=["lm_head"])
+    compressor = Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"])
 
     # _TinyLM.forward(x)는 positional arg이므로 tuple 형태로 전달
     dataloader_tuple = [(torch.randn(2, 256),) for _ in range(3)]
@@ -69,7 +64,7 @@ def test_compress_w8a8_with_calibration():
 def test_compress_w8a8_dynamic_no_calibration():
     """W8A8_DYNAMIC는 calibration 데이터 없이도 compress가 완료되어야 한다."""
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"])
+    compressor = Compressor.from_recipe("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)  # dataloader 없이 호출
 
     proj = model.proj
@@ -85,10 +80,45 @@ def test_compress_w8a8_dynamic_no_calibration():
 
 def test_compressor_save_creates_files():
     model = _TinyLM()
-    compressor = Compressor.from_scheme("w4a16", targets=["Linear"], ignore=["lm_head"])
+    compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
     compressor.compress(model)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         compressor.save(model, tmpdir)
         assert os.path.exists(os.path.join(tmpdir, "quantization_config.json"))
         assert os.path.exists(os.path.join(tmpdir, "model.safetensors"))
+
+
+def test_from_recipe_unknown_raises():
+    with pytest.raises(ValueError, match="Unknown recipe"):
+        Compressor.from_recipe("nonexistent")
+
+
+def test_from_recipe_w8a8_smoothquant_builds_modifier_chain():
+    """from_recipe가 [SmoothQuantModifier, QuantizationModifier] chain으로 펼쳐져야 한다."""
+    compressor = Compressor.from_recipe(
+        "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]
+    )
+    assert len(compressor.modifiers) == 2
+    assert isinstance(compressor.modifiers[0], SmoothQuantModifier)
+    assert isinstance(compressor.modifiers[1], QuantizationModifier)
+    # targets / ignore가 recipe 내부 QuantizationModifier로 전달돼야 함
+    assert compressor.modifiers[1].targets == ["Linear"]
+    assert compressor.modifiers[1].ignore == ["lm_head"]
+
+
+def test_from_recipe_compress_replaces_linear():
+    """from_recipe("w8a8_smoothquant")가 end-to-end로 compress까지 동작해야 한다.
+
+    _TinyLM은 decoder 구조가 아니라 SmoothQuant pair가 0개 — SmoothQuantModifier는
+    no-op이 되고, recipe 파이프라인은 그대로 QuantizationModifier까지 흐른다.
+    """
+    model = _TinyLM()
+    compressor = Compressor.from_recipe(
+        "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]
+    )
+    dataloader_tuple = [(torch.randn(2, 256),) for _ in range(3)]
+    compressor.compress(model, dataloader=dataloader_tuple)
+
+    assert isinstance(model.proj, FakeQuantLinear)
+    assert not isinstance(model.lm_head, FakeQuantLinear)

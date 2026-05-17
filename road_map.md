@@ -624,13 +624,21 @@ serialize.py   — "어떻게 저장하는가" (_scheme_to_dict, _scheme_from_di
 ### 결정 3: Compressor — one-click 진입점 API
 
 ```python
-compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
+compressor = Compressor.from_recipe("w8a8", ignore=["lm_head"])
 compressor.compress(model, dataloader)  # initialize → calibrate → finalize 자동 실행
 ```
 
 내부에서 `QuantizationModifier`를 생성하고 3단계를 순서대로 호출한다.
 llm-compressor의 `oneshot()`, Quark의 `quantizer.quantize_model()` 모두 이 원클릭 진입점을 제공함.
 발표 데모 관점에서도 한 줄 API가 설명력이 강하다.
+
+> **후속 (recipe preset 레이어로 통일)**: 처음엔 `from_scheme`(단일 scheme)만 있었으나,
+> SmoothQuant처럼 여러 modifier가 chain되는 알고리즘은 한 줄로 표현되지 않았다.
+> `from_recipe(name)` + `RECIPE_REGISTRY`(`recipes.py`)를 **유일한 진입점**으로 두고
+> `from_scheme`은 제거했다 — 단일 RTN scheme도 modifier 1개짜리 recipe로 흡수된다.
+> composition 패턴 위에 Quark식 선언적 preset 레이어를 얹되 진입점은 하나로 유지한다.
+> `scheme`(수치 포맷)은 recipe 내부 building block으로, `SCHEME_REGISTRY`는
+> `serialize.py`의 scheme→name 매칭용 카탈로그로 남는다.
 
 ---
 

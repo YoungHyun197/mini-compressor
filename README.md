@@ -346,7 +346,6 @@ pytest tests/ -v
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
 - [ ] **실 2-GPU 실측** — observer sync는 구현·검증 완료(gloo 2-proc). `device_map="auto"` 물리 cross-GPU 배치와 Tensor Parallelism은 하드웨어 한계로 미실측
 - [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push
-- [ ] **W8A8 + SmoothQuant perplexity 측정** — `python demo.py --ppl` 로 측정 후 README 표 갱신
 
 ---
 

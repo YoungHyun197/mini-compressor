@@ -415,9 +415,9 @@ generate sanity check
 save()         — save_pretrained + quantization_config.json (HF 호환)
 ```
 
-> **알고리즘별 변경 범위 요약:**  
-> SmoothQuant → `modifier.py`에 `smooth()` 단계 추가. 나머지 파일 변경 없음.  
-> GPTQ → `modifier.py`의 `calibrate()` 내부 교체. 나머지 파일 변경 없음.  
+> **알고리즘별 변경 범위 요약** (modifier composition 리팩토링 이후 — 6-A에서 완료):  
+> SmoothQuant → `modifiers/smoothquant.py` 새 파일 추가. 나머지 파일 변경 없음.  
+> GPTQ → `modifiers/gptq.py` 새 파일 추가. 나머지 파일 변경 없음.  
 > 두 기법 모두 `FakeQuantLinear.forward()`, `schemes.py`, `serialize.py`는 건드리지 않는다.
 
 ### load
@@ -803,10 +803,10 @@ SmoothQuantModifier 실구현:
 
 > **설계 검증 효과**: 새 알고리즘 추가가 `modifiers/<algo>.py` 한 파일 추가로 끝난다는 점이 SmoothQuant 구현으로 입증됐다. road_map 17.3 / 19 답변 강도 상승.
 
-### Milestone 6-B — GPTQ (시간 허락 시)
+### Milestone 6-B — GPTQ (다음 작업)
 
 ```text
-modifier.py calibrate() 내부에 GPTQ 경로 추가
+modifiers/gptq.py GPTQModifier 실구현 (stub → 실구현)
 layer별 Hessian 계산 (calibration data 활용)
 weight column 순서대로 양자화 + 오차 보상
 결과 weight를 FakeQuantLinear.weight에 직접 저장
@@ -814,7 +814,7 @@ W4A16 scheme에 적용 (per-group 4bit)
 generate 확인 + RTN W4A16 대비 perplexity 비교
 ```
 
-변경 파일: `modifier.py` (`calibrate()` 내부 GPTQ 분기 추가)  
+변경 파일: `modifiers/gptq.py` (stub → 실구현)  
 변경 없음: `fake_quant_linear.py`, `schemes.py`, `compressor.py`, `serialize.py`
 
 ### Milestone 7 ✅ (M5와 병합 완료 — 2026-05-11)
@@ -870,13 +870,13 @@ FP vs RTN vs SmoothQuant vs GPTQ 비교 표 → README 반영
 ### Milestone 6-C — Sequential Calibration (시간 허락 시)
 
 ```text
-modifier.py calibrate()에 sequential=True 모드 추가
+QuantizationModifier.calibrate()에 sequential=True 모드 추가
 layer 하나씩 GPU에 올려 calibrate → CPU offload
 전체 forward가 불가능한 대형 모델에서도 calibration 가능하게
 Qwen3-0.6B로 동작 확인 (소형 모델에서도 sequential 모드가 동작함을 검증)
 ```
 
-변경 파일: `modifier.py` 만 (`calibrate()` 내부 sequential 분기 추가)  
+변경 파일: `modifiers/quantization.py` 만 (`calibrate()` 내부 sequential 분기 추가)  
 파이프라인 위치: `calibrate()` 내부 — full forward vs layer-by-layer offload 분기
 
 ```python
@@ -1406,7 +1406,7 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 16. W8A8과 W4A16이 모두 RTN인데, 과제 요건 "2개 이상의 양자화 기법"을 어떻게 충족하는가?
 17. SmoothQuant가 해결하는 문제는 무엇인가? RTN W8A8 대비 perplexity가 왜 개선되는가?
 18. GPTQ가 RTN보다 나은 이유는? Hessian이 왜 필요한가?
-19. SmoothQuant와 GPTQ 모두 modifier.py만 수정하면 되는데, 이것이 설계상 무엇을 보여주는가?
+19. SmoothQuant와 GPTQ 모두 `modifiers/`에 새 파일 하나 추가로 끝나는데, 이것이 설계상 무엇을 보여주는가?
 20. 대형 모델에서 전체 forward가 불가능할 때 어떻게 calibration을 수행하는가?
 21. sequential calibration은 어떤 파일을 수정하는가? FakeQuantLinear나 schemes.py를 건드리는가?
 22. 이 툴을 LLaMA 계열에 적용하려면 무엇을 바꿔야 하는가?
@@ -1508,7 +1508,7 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 수정 불필요한 파일:
   - FakeQuantLinear: scheme 객체를 읽어서 동작하므로 변경 없음
   - QuantizationModifier: scheme 기반 분기 없이 initialize/calibrate/finalize 그대로
-  - Compressor: from_scheme(name)이 SCHEME_REGISTRY를 조회하므로 변경 없음
+  - Compressor: from_recipe(name) + RECIPE_REGISTRY 구조 — recipe 한 줄 등록 외 진입점 코드 변경 없음
   - serialize: quantization_config.json 포맷은 QuantizationScheme을 직렬화하므로 변경 없음
 
 단, dtype="float8" 실제 연산을 지원하려면:

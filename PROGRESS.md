@@ -1,18 +1,19 @@
 # mini-compressor 구현 진행 상황
 
-## 현재 날짜: 2026-05-10
+## 현재 날짜: 2026-05-18
 
 ---
 
 ## 프로젝트 구조 (완료)
 
-- [x] `mini_compressor/__init__.py`
-- [x] `mini_compressor/schemes.py` — QuantizationSpec, QuantizationScheme, W8A8, W4A16
+- [x] `mini_compressor/schemes.py` — QuantizationSpec, QuantizationScheme, SCHEME_REGISTRY
 - [x] `mini_compressor/fake_quant_linear.py` — FakeQuantLinear (flat buffer 방식)
-- [x] `mini_compressor/modifier.py` — stub (Milestone 7에서 구현 예정)
-- [x] `mini_compressor/compressor.py` — stub (Milestone 8에서 구현 예정)
-- [x] `mini_compressor/serialize.py` — stub (Milestone 9에서 구현 예정)
-- [x] `tests/test_fake_quant_linear.py` — 3개 기본 테스트
+- [x] `mini_compressor/observer.py` — 4종 observer + multi-GPU sync
+- [x] `mini_compressor/modifiers/` — BaseModifier + 알고리즘별 클래스 (composition pattern)
+- [x] `mini_compressor/recipes.py` — RECIPE_REGISTRY (preset 진입점)
+- [x] `mini_compressor/compressor.py` — Compressor (modifier list 진입점)
+- [x] `mini_compressor/serialize.py` — save_pretrained / load_pretrained
+- [x] `tests/` — 6개 파일, 32개 케이스
 - [x] `notebooks/` 디렉토리
 
 ---
@@ -100,7 +101,7 @@ generate 확인
 ### Milestone 6 — 고급 압축 기법 확장 (시간 허락 시)
 > W4A16 RTN은 M5에 통합 완료. M6은 SmoothQuant / GPTQ 확장만 담당.
 
-### Milestone 6-A — SmoothQuant ✅ 완료 (feature/smoothquant 브랜치)
+### Milestone 6-A — SmoothQuant ✅ 완료
 ```
 modifier composition 리팩토링 + SmoothQuantModifier 실구현
 norm → linear group 자동 탐색
@@ -117,7 +118,7 @@ Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)]) chain 동작
   - [x] `s = max(|X|)^α / max(|W|)^(1-α)` 계산 (α=0.5 기본)
   - [x] `norm.weight /= s`, `linear.weight *= s` 적용
 - [x] `Compressor` API 갱신 — modifier list 수용 (`Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)])`)
-- [x] backward compatibility 유지 — `Compressor.from_scheme("w8a8")` 그대로 동작
+- [x] backward compatibility 유지 (이후 6-A 후속에서 `from_recipe`로 통일하며 `from_scheme` 제거)
 - [x] 동등성 단위 테스트 3개 추가 (`tests/test_smoothquant.py`)
 - [x] `demo.py`에 W8A8+SmoothQuant 옵션 추가
 - [x] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`)
@@ -141,31 +142,31 @@ composition 패턴 위에 Quark식 선언적 preset 레이어 추가
 
 ---
 
-### Milestone 6-B — GPTQ (시간 허락 시)
+### Milestone 6-B — GPTQ (다음 작업)
 ```
-modifier.py calibrate()에 GPTQ 분기 추가
+modifiers/gptq.py GPTQModifier 실구현
 layer별 Hessian + column-wise weight 최적화
 W4A16 + GPTQ generate 확인
 RTN W4A16 대비 perplexity 비교
 ```
-변경 파일: `modifier.py` 만
+변경 파일: `modifiers/gptq.py` (stub → 실구현) 만
 
-- [ ] `modifier.py`에 GPTQ 분기 구현
+- [ ] `GPTQModifier` 실구현 (`modifiers/gptq.py`)
   - [ ] layer별 Hessian 계산 (calibration data)
   - [ ] weight column 순서대로 양자화 + 오차 보상
   - [ ] 결과 weight를 `FakeQuantLinear.weight`에 저장
 - [ ] W4A16 + GPTQ generate 확인
-- [ ] lm-eval perplexity 비교 (RTN vs GPTQ)
+- [ ] perplexity 비교 (RTN vs GPTQ)
 
 ---
 
 ### Milestone 6-C — Sequential Calibration (시간 허락 시)
 ```
-modifier.py calibrate()에 sequential=True 모드 추가
+QuantizationModifier.calibrate()에 sequential=True 모드 추가
 layer 단위 GPU offload calibration
 대형 모델에서 전체 forward 불가 시 사용
 ```
-변경 파일: `modifier.py` 만
+변경 파일: `modifiers/quantization.py` 만
 
 - [x] `calibrate(sequential=False)` 기본 인터페이스 확정 (파라미터 추가 + stub)
 - [ ] `_calibrate_sequential()` 구현
@@ -298,7 +299,7 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 - [x] W4A16 RTN perplexity 측정 — 25.89 (+7.73)
 - [x] W8A8 static perplexity 측정 — 27.75 (+9.59)
 - [x] W8A8 dynamic perplexity 측정 — 18.48 (+0.32)
-- [ ] W8A8 SmoothQuant perplexity 측정 (Milestone 6-A 완료 시)
+- [x] W8A8 + SmoothQuant perplexity 측정 — 23.67 (`demo.py --ppl`, 5 샘플)
 - [ ] W4A16 GPTQ perplexity 측정 (Milestone 6-B 완료 시)
 - [x] 비교 표 README에 추가
 
@@ -419,7 +420,7 @@ demo.py 작성
    - state_dict key: `weight_scale` (NOT `_weight_quantizer.scale`)
    - weight key: `weight` 유지 (float16, qweight 아님)
 4. **멀티모델**: fnmatch 패턴 기반 target/ignore, 모델 아키텍처 비종속
-5. **Sequential calibration**: `calibrate(sequential=True)` 플래그, `modifier.py` 내부 분기
+5. **Sequential calibration**: `calibrate(sequential=True)` 플래그, `modifiers/quantization.py` 내부 분기
 
 ---
 
@@ -429,20 +430,19 @@ demo.py 작성
 |-----------|------|------|
 | serialization 포맷 설계 (quantization config 등) | **완료** | compressed-tensors 포맷 호환 `quantization_config.json`, `save_pretrained`/`load_pretrained` 구현 |
 | HuggingFace Hub model card upload 가능한 구조 | **부분 완료** | 파일 구조는 HF 호환 (safetensors + config.json). model card(README) 생성 유틸리티 미구현 |
-| Multi-GPU 고려 | 미구현 | 설계 고려사항만 기록 (아래 참고) |
+| Multi-GPU 고려 | **완료** | M13 — observer `sync()` 4종 (all_reduce / all_gather), gloo 2-proc 검증 |
 
 ---
 
 ## Multi-GPU 가산점 요소
 
-> **구현 전 반드시 별도 논의 후 결정**. 아래는 설계 고려사항만 기록.
+> **M13에서 구현 완료** — observer `sync()` 4종 + gloo 2-proc 검증. 아래는 항목별 상태.
 
-| 고려사항 | 내용 |
+| 고려사항 | 상태 |
 |---------|------|
-| DataParallel calibration | Observer 통계 all-reduce 동기화 필요 |
-| Tensor Parallelism | shard된 weight의 scale 계산/merge 필요 |
-| Sequential + Multi-GPU | device placement 로직 추가 |
-| state_dict 저장 | rank 0 저장 또는 shard별 저장 방식 선택 |
+| DataParallel calibration | ✅ observer all_reduce / all_gather 동기화 |
+| Tensor Parallelism | 범위 외 — shard된 weight의 scale merge는 별도 난제 |
+| Sequential + Multi-GPU | 미진행 — device placement 로직 추가 필요 |
+| state_dict 저장 | ✅ rank 0 저장 가드 구현됨 (`serialize.py`) |
 
-영향 파일: `modifier.py`, `compressor.py`, `serialize.py`  
-`FakeQuantLinear`, `schemes.py` 변경 없음
+영향 파일: `observer.py` (sync), `modifiers/quantization.py` (sync 호출), `serialize.py` (rank 0 가드)

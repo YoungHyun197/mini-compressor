@@ -9,7 +9,7 @@
 ```
 mini_compressor/
   schemes.py             — QuantizationSpec, QuantizationScheme, W8A8/W4A16/W8A8_DYNAMIC, SCHEME_REGISTRY
-  observer.py            — BaseObserver(+sync stub), MinMax/Percentile/MSE/KLDivergence observer
+  observer.py            — BaseObserver(+sync 4종 구현), MinMax/Percentile/MSE/KLDivergence observer
   fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
   modifiers/             — modifier composition pattern (llm-compressor 정렬)
     base.py              — BaseModifier 추상 인터페이스 (initialize/calibrate/finalize)
@@ -17,10 +17,11 @@ mini_compressor/
     smoothquant.py       — SmoothQuantModifier (실구현)
     gptq.py              — GPTQModifier (stub)
     awq.py               — AWQModifier (stub)
-  compressor.py          — Compressor (modifier list 수용, from_scheme/compress/save, save_to_hub stub)
+  recipes.py             — RECIPE_REGISTRY (preset 이름 → modifier 파이프라인 factory)
+  compressor.py          — Compressor (modifier list 수용, from_recipe/compress/save, save_to_hub stub)
   serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
 
-demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-to-end 데모 (--save, --ppl 옵션)
+demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-to-end 데모 (--model, --save, --ppl 옵션)
 ```
 
 ---
@@ -57,7 +58,7 @@ demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-
 | per_tensor  | `max(\|w\|) / qmax` | scalar |
 
 - symmetric이므로 zero_point = 0.
-- `_compute_weight_scale()`은 modifier.py 모듈 수준 함수로 분리 (QuantizationModifier 메서드 아님).
+- `_compute_weight_scale()`은 `modifiers/quantization.py` 모듈 수준 함수로 분리 (QuantizationModifier 메서드 아님).
 
 ### 5. targets / ignore 우선순위
 
@@ -131,18 +132,20 @@ activation: None
 
 | Milestone | 핵심 파일 | 상태 |
 |-----------|-----------|------|
-| M1 | notebooks/milestone1_model_load.ipynb | 완료 |
-| M2 | (notebook에서 확인) | 완료 |
-| M3 | fake_quant_linear.py (_fake_quantize_*) | 완료 |
-| M4 | schemes.py, fake_quant_linear.py, tests/test_fake_quant_linear.py | 완료 |
-| M5+M7 | observer.py, modifier.py | 완료 |
-| M8 | modifier.py, serialize.py, compressor.py, tests/ | 완료 |
-| M8-5 | schemes.py(W8A8_DYNAMIC), fake_quant_linear.py(dynamic 분기), modifier.py | 완료 |
+| M1–M4 | fake_quant_linear.py, schemes.py, tests/test_fake_quant_linear.py | 완료 |
+| M5+M7 | observer.py, modifiers/quantization.py | 완료 |
+| M8 | modifiers/, serialize.py, compressor.py, tests/ | 완료 |
+| M8-5 | schemes.py(W8A8_DYNAMIC), fake_quant_linear.py(dynamic 분기) | 완료 |
 | M9 | README.md | 완료 |
-| M11 | notebooks/milestone11_perplexity.ipynb, README perplexity 표 | 완료 |
+| M10 | presentation/slides.md, script.md | 완료 |
+| M11 | notebooks/milestone11_perplexity.ipynb | 완료 |
 | M12 | demo.py | 완료 |
+| M6-A | modifiers/smoothquant.py (+ modifiers/ 패키지 분리) | 완료 |
+| M6-A 후속 | recipes.py (from_recipe 단일 진입점) | 완료 |
+| M13 | observer.py(sync 4종), tests/test_observer_sync.py | 완료 |
+| M6-D | demo.py(--model), notebooks/milestone6d_llama_validation.ipynb | 완료 |
 
-단위 테스트: 24개 통과 (CI 연동)
+단위 테스트: 32개 통과 (CI 연동)
 
 ---
 
@@ -151,7 +154,7 @@ activation: None
 원래 M6에서 구현 예정이던 W4A16 RTN per-group fake quant가 M5 구현 시점에 이미 완성됨.
 
 - `_group_fake_quant()`: fake_quant_linear.py에 구현
-- `_compute_weight_scale()` per_group 분기: modifier.py에 구현
+- `_compute_weight_scale()` per_group 분기: modifiers/quantization.py에 구현
 - `test_initialize_w4a16_scale_shape`: scale shape 검증 통과
 
 M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 항목은 M5 완료로 처리.
@@ -160,9 +163,8 @@ M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 
 
 ## 미완료 / 다음 할 일
 
-- [ ] M6-A: SmoothQuant (`modifier.smooth()` stub → 구현)
-- [ ] M6-B: GPTQ (`modifier.gptq()` stub → 구현)
-- [ ] M13: Multi-GPU — Observer all-reduce, device_map="auto" 호환 검증
+- [ ] M6-B: GPTQ (`modifiers/gptq.py` GPTQModifier stub → 실구현)
+- [ ] M6-C: Sequential calibration / Float8 / save_to_hub — stub만 존재
 
 ---
 
@@ -564,13 +566,12 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **산출물**: `demo.py`에 `--model` 인자 추가(end-to-end 데모를 모델 비종속화), `notebooks/milestone6d_llama_validation.ipynb`(실행 결과 포함). 라이브러리 코드 변경 없음 — 이게 M6-D의 핵심 증거.
 
-### 작업 위치 (2026-05-17 갱신 — M6-D)
+### 작업 위치 (2026-05-18 갱신)
 
-- main: `dc9582a` (M13 PR #4까지 머지 완료). working tree에 M6-D 작업 uncommitted.
-  - uncommitted: `demo.py`(`--model` 인자), `notebooks/milestone6d_llama_validation.ipynb`(신규), `README`/`PROGRESS`/`road_map`/`context-notes`. 라이브러리 코드(`mini_compressor/`) 무변경.
-- 단위 테스트 32개 통과 (라이브러리 무변경이라 회귀 없음).
+- main: `8b523c2` — M1–M13 + M6-A(+recipe) + M6-D 전부 머지 완료 (PR #1~#5). 모든 feature 브랜치 정리됨.
+- working tree: 4개 문서(README/PROGRESS/road_map/context-notes) 감사·동기화 수정만 uncommitted.
+- 단위 테스트 32개 통과.
 
 ### 다음 작업
 
-- git: M6-D 작업을 `feature/llama-validation` 브랜치로 커밋 → PR → main 머지.
-- 코드 후보: M6-B GPTQ 실제 구현.
+- M6-B GPTQ 실구현 (`modifiers/gptq.py` stub → Hessian 기반) — 남은 주요 milestone.

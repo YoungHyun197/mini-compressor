@@ -1209,7 +1209,7 @@ def calibrate(self, model, dataloader, sequential=False):
 
 ### 13-3. Multi-GPU 지원 (가산점 요소)
 
-**현재 상태: 구현 목표로 확정 (Milestone 13). rank 0 저장 가드만 구현, 나머지 미구현.**
+**현재 상태: Milestone 13 완료 — observer `sync()` 4종 구현(MinMax는 all_reduce, Percentile/MSE/KL은 all_gather) + gloo 2-프로세스 검증. Tensor Parallelism과 실 2-GPU `device_map="auto"` 실측은 범위 외 / 하드웨어 한계.**
 
 **고려해야 할 사항:**
 

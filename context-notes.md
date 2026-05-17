@@ -524,18 +524,38 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **미수정**: `notebooks/milestone8_round_trip.ipynb`·`milestone11_perplexity.ipynb`은 `from_scheme`을 쓰지만 과거 실행 기록(출력 보존)이라 손대지 않음 — 재실행 시점에 갱신.
 
-### 작업 위치 (2026-05-17 갱신)
+---
 
-- 브랜치: `feature/smoothquant` — 커밋 5개 푸시됨 + recipe preset 작업이 working tree에 uncommitted.
-  - 푸시된 5커밋: `af1901b` refactor / `d30e1ec` feat(smoothquant) / `cfae353` docs / `3e7fa86` fix(bias) / `011f21f` docs(ppl).
-  - uncommitted: recipe preset 레이어 + 진입점 `from_recipe` 통일 (`recipes.py` 신규, `compressor.py`, `__init__.py`, `tests/test_compressor.py`, `demo.py`, `README.md`) + 문서 동기화 (decision #27·#28).
-- 30개 단위 테스트 통과. git PR 머지는 사용자가 보류 중.
+## 2026-05-17 — M13 Multi-GPU observer sync
+
+### 29. observer sync — MinMax는 all_reduce, 나머지 셋은 all_gather
+
+**문제**: multi-GPU DataParallel calibration에서 각 rank가 자기 배치만 보므로 observer 통계가 rank별로 부분적. `compute_scale_zp` 전에 rank 간 동기화 필요.
+
+**결정**: observer 종류에 따라 두 방식.
+- `MinMaxObserver.sync()` — `all_reduce(min_val, MIN)` / `all_reduce(max_val, MAX)`. min·max는 결합법칙이 성립해 부분 결과를 정확히 병합. 통신량 O(1). road_map 원칙 2("MinMax 통계를 tensor 연산으로 유지")가 노린 결과.
+- `Percentile/MSE/KL.sync()` — `all_gather_object`로 raw `_data`를 전 rank에 공유. 이 셋은 percentile·grid-search·histogram 등 비결합적 계산이라 부분 통계 병합 불가. (a) raw data 공유 vs (b) 알고리즘 재구조화 중, (b)는 동작 코드 3개를 갈아엎음 → (a) 채택. `compute_scale_zp` 무수정 + `sync()`만 추가. 한계: 메모리 rank배 → 대규모는 (b)가 future work.
+- stub docstring의 "MSE: all_reduce(argmin)"은 부정확(rank별 argmin이 달라 병합 안 됨) — all_gather로 바로잡음.
+
+**no-op 보장**: `_dist_active()`(`dist.is_initialized() and world_size>1`)가 아니면 `sync()`는 즉시 return. 단일 GPU 경로(기존 테스트·demo·PPL) 무변경.
+
+**호출 지점**: `QuantizationModifier.calibrate()` — forward 루프 종료 후, `compute_scale_zp` 직전.
+
+**검증**: 2-GPU 하드웨어 없음 → `gloo` 백엔드(CPU 분산)로 `torch.multiprocessing.spawn` 2-프로세스. `tests/test_observer_sync.py`: rank별 다른 데이터 → sync → 결과가 전체 데이터 단일 프로세스 결과와 일치 확인(4개 observer). 검증 불가 영역은 `device_map="auto"` 물리 cross-GPU 배치뿐.
+
+### 30. device_map 감사 — input_scale을 weight.device로 보정
+
+**13-2 감사 결과**: `weight_scale`은 weight에서 계산돼 device를 따라감. MinMax observer는 FakeQuantLinear 서브모듈이라 buffer도 따라감. 그러나 Percentile/MSE/KL은 `update()`에서 `_data`를 `.cpu()`로 모아 `input_scale`이 CPU에 남음 → GPU 모델 forward 시 device mismatch.
+
+**fix**: `calibrate()`에서 `mod.input_scale = scale.to(mod.weight.device)` (zp 동일). 단일 CPU/GPU 모두 안전.
+
+### 작업 위치 (2026-05-17 갱신 — M13)
+
+- main: `149c994` (recipe preset PR #3까지 머지 완료). working tree에 M13 작업 uncommitted.
+  - uncommitted: `observer.py`(sync 4종), `modifiers/quantization.py`(sync 호출 + device 보정), `tests/test_observer_sync.py`(신규), `README`/`PROGRESS`/`road_map`/`context-notes`.
+- 32개 단위 테스트 통과 (30 + observer sync 2). 작업 브랜치 `feature/multi-gpu` 예정 (아직 생성 전).
 
 ### 다음 작업
 
-git 관련은 사용자 보류 중. 코드 작업 후보 (사용자 선택 대기).
-- M13 Multi-GPU — `BaseObserver.sync()` all-reduce, `device_map="auto"` 검증.
-- M6-D LLaMA-3.2-1B 멀티모델 검증 — README "아키텍처 독립" 주장 실증.
-- M6-B GPTQ 실제 구현 — W4A16 PPL 개선.
-
-git 작업 (보류): `feature/smoothquant` → main PR 머지 (Option A, `gh` CLI는 `~/.local/bin`에 설치 완료). 머지 후 각 신규 작업은 새 feature 브랜치 권장.
+- git: M13 작업을 `feature/multi-gpu` 브랜치로 커밋 → PR → main 머지.
+- 코드 후보: M6-D LLaMA-3.2-1B 멀티모델 검증 / M6-B GPTQ 실제 구현.

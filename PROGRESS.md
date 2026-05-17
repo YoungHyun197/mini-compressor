@@ -309,24 +309,29 @@ rank 0 저장 가드 (serialize.py) — 이미 적용됨
 검증 코드 작성
 ```
 
-#### 13-1. DataParallel calibration
+#### 13-1. DataParallel calibration ✅ 완료
 - [x] rank 0 저장 가드 (`serialize.py:103`) — 이미 구현됨
-- [ ] `MinMaxObserver.compute_scale_zp()` 전에 `dist.all_reduce(min_val, op=MIN)` / `all_reduce(max_val, op=MAX)` 추가
-- [ ] `PercentileObserver`: `all_gather` → 전체 통계 수집 후 percentile 계산
-- [ ] `MSEObserver`: 로컬 grid-search 후 `all_reduce(argmin)` 동기화
-- [ ] `KLDivergenceObserver`: `all_reduce(SUM)` on histogram bins
+- [x] `MinMaxObserver.sync()` — `all_reduce(MIN/MAX)` (min·max는 결합적 → 한 줄로 정확 병합)
+- [x] `PercentileObserver.sync()` — `all_gather_object`로 raw `_data` 전역 공유
+- [x] `MSEObserver.sync()` / `KLDivergenceObserver.sync()` — 동일하게 `all_gather_object`
+      (percentile·grid-search·histogram은 비결합적 → 부분 통계 병합 불가, raw 공유가 정확·수술적)
+- [x] `QuantizationModifier.calibrate()`에서 `compute_scale_zp` 직전 `sync()` 호출
 
-#### 13-2. device_map="auto" 호환
-- [ ] `device_map="auto"` 로드 후 W4A16 compress → generate 동작 확인
-- [ ] scale buffer가 `weight.device`를 따라가는지 검증 (초기 설계 원칙 준수 여부)
+#### 13-2. device_map="auto" 호환 ✅ 코드 감사 완료
+- [x] scale이 `weight.device`를 따라가는지 감사 — `weight_scale`은 weight에서 계산돼 OK,
+      `input_scale`은 Percentile/MSE/KL이 `_data`를 CPU로 모아 CPU에 남던 갭 발견 →
+      `calibrate()`에서 `.to(mod.weight.device)`로 보정
+- [ ] 실제 2-GPU `device_map="auto"` round-trip 실측 — 2-GPU 하드웨어 없음 (한계)
 
-#### 13-3. Tensor Parallelism (복잡도 높음, 별도 논의 필요)
+#### 13-3. Tensor Parallelism (범위 외 — 별도 논의)
 - [ ] shard된 weight에서 scale 계산/merge 방식 결정
 - [ ] 구현 여부는 진행 상황에 따라 판단
 
-#### 13-4. 검증 코드
-- [ ] 2-GPU 환경에서 W8A8 calibrate → observer all-reduce 동기화 확인
-- [ ] `device_map="auto"` round-trip 테스트
+#### 13-4. 검증 코드 ✅ 완료
+- [x] `tests/test_observer_sync.py` — gloo 2-프로세스로 4개 observer sync 실검증
+      (분산 결과 == 전체 데이터 단일 프로세스 결과)
+- [x] sync() no-op 검증 (분산 init 없이 호출 시 통계 불변)
+- [ ] 2-GPU `device_map="auto"` round-trip — 하드웨어 한계로 미실행
 
 ---
 
@@ -375,7 +380,7 @@ demo.py 작성
 | AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
 | Sequential calibration | stub 있음 | `calibrate(sequential=True)` — NotImplementedError |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
-| Multi-GPU Observer 동기화 | stub 있음 | `BaseObserver.sync()` — NotImplementedError. rank 0 저장 가드는 구현됨 |
+| Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
 | HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
 | Multi-model 검증 | 미진행 | Qwen3-0.6B 외 LLaMA 등 미확인 |
 
@@ -383,12 +388,12 @@ demo.py 작성
 
 ## 현재 작업 위치
 
-> **Milestone 1–12 완료** (M6-A SmoothQuant + Recipe preset 레이어 포함)
+> **Milestone 1–13 완료** (M6-A SmoothQuant + Recipe preset + M13 Multi-GPU observer sync 포함)
+> M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
 
 **다음 할 일.**
-1. Milestone 13: Multi-GPU 지원 (`BaseObserver.sync()` all-reduce 구현)
-2. Milestone 6-D: LLaMA-3.2-1B 멀티모델 검증
-3. Milestone 6-B: GPTQ 실제 구현
+1. Milestone 6-D: LLaMA-3.2-1B 멀티모델 검증
+2. Milestone 6-B: GPTQ 실제 구현
 
 ---
 

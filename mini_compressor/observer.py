@@ -2,10 +2,31 @@
 from __future__ import annotations
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 from typing import Tuple
 
 from .schemes import QuantizationSpec
+
+
+def _dist_active() -> bool:
+    """torch.distributed가 초기화돼 있고 world_size > 1일 때만 rank 동기화가 필요하다."""
+    return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
+
+
+def _sync_data(data: list[torch.Tensor]) -> list[torch.Tensor]:
+    """rank별 raw 통계 데이터 리스트를 all_gather해 전역 리스트로 합친다.
+
+    Percentile/MSE/KL은 raw activation을 모아 compute_scale_zp에서 비결합적 계산
+    (percentile·grid-search·histogram)을 한다. 부분 통계로는 병합이 불가능하므로
+    raw 데이터를 전 rank가 공유해 동일한 전역 결과를 내도록 한다.
+    분산 환경이 아니면 입력을 그대로 돌려준다 (no-op).
+    """
+    if not _dist_active():
+        return data
+    gathered: list = [None] * dist.get_world_size()
+    dist.all_gather_object(gathered, data)
+    return [t for rank_data in gathered for t in rank_data]
 
 
 class BaseObserver(nn.Module):
@@ -21,27 +42,8 @@ class BaseObserver(nn.Module):
         raise NotImplementedError
 
     def sync(self) -> None:
-        """Multi-GPU 환경에서 observer 통계를 전체 rank에 동기화한다.
-
-        Args:
-            없음. 내부적으로 torch.distributed를 사용한다.
-
-        Intended behavior:
-            - MinMaxObserver: dist.all_reduce(min_val, op=MIN) / all_reduce(max_val, op=MAX)
-            - PercentileObserver: dist.all_gather(self._data) → 전체 rank 분포에서 percentile 계산
-            - MSEObserver: 로컬 grid-search 후 dist.all_reduce(best_loss, op=MIN) 동기화
-            - KLDivergenceObserver: dist.all_reduce(histogram_bins, op=SUM) 후 KL 최소화
-            single-GPU 환경에서는 no-op으로 동작해야 한다.
-
-        Usage:
-            observer.update(x)          # 각 rank에서 local 통계 수집
-            observer.sync()             # 전체 rank 동기화  ← 여기
-            scale, zp = observer.compute_scale_zp(spec)
-        """
-        raise NotImplementedError(
-            "Multi-GPU observer sync is not yet implemented. "
-            "Single-GPU calibration works without calling sync()."
-        )
+        """Multi-GPU calibration에서 rank 간 통계를 동기화한다 (분산 환경 아니면 no-op)."""
+        raise NotImplementedError
 
     @staticmethod
     def _scale_zp_from_range(
@@ -88,6 +90,13 @@ class MinMaxObserver(BaseObserver):
         self.min_val.fill_(float("inf"))
         self.max_val.fill_(float("-inf"))
 
+    def sync(self) -> None:
+        """rank 간 min/max를 all_reduce로 병합 — min·max는 결합적이라 한 줄로 정확히 동기화된다."""
+        if not _dist_active():
+            return
+        dist.all_reduce(self.min_val, op=dist.ReduceOp.MIN)
+        dist.all_reduce(self.max_val, op=dist.ReduceOp.MAX)
+
 
 class PercentileObserver(BaseObserver):
     """percentile 클리핑으로 outlier 제거 — multi-GPU: all_gather 후 전체 분포에서 계산."""
@@ -110,6 +119,10 @@ class PercentileObserver(BaseObserver):
 
     def reset(self) -> None:
         self._data.clear()
+
+    def sync(self) -> None:
+        """rank별 raw 데이터를 all_gather해 전역 분포로 합친다."""
+        self._data = _sync_data(self._data)
 
 
 class MSEObserver(BaseObserver):
@@ -155,6 +168,10 @@ class MSEObserver(BaseObserver):
 
     def reset(self) -> None:
         self._data.clear()
+
+    def sync(self) -> None:
+        """rank별 raw 데이터를 all_gather해 전역 분포로 합친다."""
+        self._data = _sync_data(self._data)
 
 
 class KLDivergenceObserver(BaseObserver):
@@ -230,6 +247,10 @@ class KLDivergenceObserver(BaseObserver):
 
     def reset(self) -> None:
         self._data.clear()
+
+    def sync(self) -> None:
+        """rank별 raw 데이터를 all_gather해 전역 분포로 합친다."""
+        self._data = _sync_data(self._data)
 
 
 OBSERVER_REGISTRY: dict[str, type[BaseObserver]] = {

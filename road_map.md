@@ -807,19 +807,22 @@ SmoothQuantModifier 실구현:
 
 > **설계 검증 효과**: 새 알고리즘 추가가 `modifiers/<algo>.py` 한 파일 추가로 끝난다는 점이 SmoothQuant 구현으로 입증됐다. road_map 17.3 / 19 답변 강도 상승.
 
-### Milestone 6-B — GPTQ (다음 작업)
+### Milestone 6-B — GPTQ ✅ 완료 (2026-05-18)
 
 ```text
 modifiers/gptq.py GPTQModifier 실구현 (stub → 실구현)
-layer별 Hessian 계산 (calibration data 활용)
-weight column 순서대로 양자화 + 오차 보상
-결과 weight를 FakeQuantLinear.weight에 직접 저장
-W4A16 scheme에 적용 (per-group 4bit)
-generate 확인 + RTN W4A16 대비 perplexity 비교
+QuantizationMixin 분리 (llm-compressor QuantizationMixin 패턴)
+forward pre-hook으로 layer별 H = 2·XᵀX 누적
+dead column + dampening + Cholesky inverse
+per-group block-column 양자화 + intra/inter-group 오차 전파
+w4a16_gptq recipe 추가
+unit test 4개: replaces_linear / scale_shape / weight_on_grid / mse_leq_rtn
 ```
 
-변경 파일: `modifiers/gptq.py` (stub → 실구현)  
-변경 없음: `fake_quant_linear.py`, `schemes.py`, `compressor.py`, `serialize.py`
+변경 파일: `modifiers/gptq.py`, `modifiers/quantization.py`, `modifiers/__init__.py`,
+`compressor.py`, `recipes.py`, `tests/test_gptq.py`  
+변경 없음: `fake_quant_linear.py`, `schemes.py`, `serialize.py`  
+테스트: 39개 통과 (4개 추가)
 
 ### Milestone 7 ✅ (M5와 병합 완료 — 2026-05-11)
 
@@ -1410,7 +1413,7 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 16. W8A8과 W4A16이 모두 RTN인데, 과제 요건 "2개 이상의 양자화 기법"을 어떻게 충족하는가?
 17. SmoothQuant가 해결하는 문제는 무엇인가? RTN W8A8 대비 perplexity가 왜 개선되는가?
 18. GPTQ가 RTN보다 나은 이유는? Hessian이 왜 필요한가?
-19. SmoothQuant와 GPTQ 모두 `modifiers/`에 새 파일 하나 추가로 끝나는데, 이것이 설계상 무엇을 보여주는가?
+19. SmoothQuant와 GPTQ 모두 `modifiers/`에 새 파일 하나 추가로 끝나는데, 이것이 설계상 무엇을 보여주는가? (`fake_quant_linear.py`, `schemes.py`, `serialize.py` 변경 없음으로 입증됨)
 20. 대형 모델에서 전체 forward가 불가능할 때 어떻게 calibration을 수행하는가?
 21. sequential calibration은 어떤 파일을 수정하는가? FakeQuantLinear나 schemes.py를 건드리는가?
 22. 이 툴을 LLaMA 계열에 적용하려면 무엇을 바꿔야 하는가?

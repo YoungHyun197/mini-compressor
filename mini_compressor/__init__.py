@@ -4,6 +4,7 @@ from .modifiers import (
     AWQModifier,
     BaseModifier,
     GPTQModifier,
+    QuantizationMixin,
     QuantizationModifier,
     SmoothQuantModifier,
 )

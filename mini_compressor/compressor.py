@@ -5,7 +5,7 @@ from typing import Iterable, List, Optional
 
 import torch.nn as nn
 
-from .modifiers import BaseModifier, QuantizationModifier
+from .modifiers import BaseModifier, QuantizationMixin, QuantizationModifier
 from .recipes import RECIPE_REGISTRY
 from .serialize import save_pretrained
 
@@ -119,11 +119,11 @@ class Compressor:
             "huggingface_hub.upload_folder(repo_id=..., folder_path=save_dir)."
         )
 
-    def _find_quantization_modifier(self) -> QuantizationModifier:
+    def _find_quantization_modifier(self) -> QuantizationMixin:
         for m in self.modifiers:
-            if isinstance(m, QuantizationModifier):
+            if isinstance(m, QuantizationMixin):
                 return m
         raise ValueError(
-            "save()는 modifier list에 QuantizationModifier가 포함되어 있을 때만 호출 가능합니다. "
+            "save()는 modifier list에 QuantizationModifier 또는 GPTQModifier가 포함되어 있을 때만 호출 가능합니다. "
             f"현재 modifier 종류: {[type(m).__name__ for m in self.modifiers]}"
         )

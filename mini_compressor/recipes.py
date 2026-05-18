@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
-from .modifiers import BaseModifier, QuantizationModifier, SmoothQuantModifier
+from .modifiers import BaseModifier, GPTQModifier, QuantizationModifier, SmoothQuantModifier
 from .schemes import W8A8, W4A16, W8A8_DYNAMIC, QuantizationScheme
 
 # recipe factory: (targets, ignore) → modifier 리스트.
@@ -24,6 +24,13 @@ def _rtn(scheme: QuantizationScheme) -> RecipeFactory:
     return factory
 
 
+def _w4a16_gptq(
+    targets: Optional[List[str]], ignore: Optional[List[str]]
+) -> List[BaseModifier]:
+    """GPTQ W4A16 — Hessian 기반 오차 전파로 RTN보다 낮은 reconstruction error를 달성한다."""
+    return [GPTQModifier(W4A16, targets=targets, ignore=ignore)]
+
+
 def _w8a8_smoothquant(
     targets: Optional[List[str]], ignore: Optional[List[str]]
 ) -> List[BaseModifier]:
@@ -39,6 +46,7 @@ def _w8a8_smoothquant(
 # modifier가 chain된 recipe로 — 모든 preset을 하나의 레지스트리로 표현한다.
 RECIPE_REGISTRY: Dict[str, RecipeFactory] = {
     "w4a16": _rtn(W4A16),
+    "w4a16_gptq": _w4a16_gptq,
     "w8a8": _rtn(W8A8),
     "w8a8_dynamic": _rtn(W8A8_DYNAMIC),
     "w8a8_smoothquant": _w8a8_smoothquant,

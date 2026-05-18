@@ -1,4 +1,4 @@
-# QuantizationModifier — observer로 weight/activation scale을 산출하는 RTN 양자화 modifier
+# QuantizationMixin + QuantizationModifier — module replacement 공통 mixin과 RTN modifier
 from __future__ import annotations
 
 import fnmatch
@@ -13,19 +13,12 @@ from ..schemes import QuantizationScheme
 from .base import BaseModifier
 
 
-class QuantizationModifier(BaseModifier):
-    """nn.Linear를 FakeQuantLinear로 교체하고 observer로 scale을 산출한다.
+class QuantizationMixin:
+    """nn.Linear → FakeQuantLinear 교체 + finalize를 GPTQModifier와 공유하는 mixin.
 
-    weight·activation 모두 동일한 observer 추상화를 거친다 — clip range는
-    scheme.{weight,activation}.calibration_method(minmax/percentile/mse/kl)가 정하고,
-    rounding은 양쪽 다 round-to-nearest(RTN)다.
-
-    Lifecycle:
-        initialize(model): nn.Linear → FakeQuantLinear 교체 + weight observer로
-                           weight scale 산출 (compute_scales=True 기본).
-        calibrate(dataloader): activation observer로 input_scale/input_zero_point 계산
-                               (scheme.activation이 None이거나 dynamic이면 no-op).
-        finalize(): observer 제거, scale buffer만 남김.
+    llm-compressor의 QuantizationMixin 패턴: QuantizationModifier와 GPTQModifier가
+    동일한 module replacement 로직을 상속한다.
+    initialize / finalize가 여기 구현되고, calibrate는 각 Modifier가 별도로 구현한다.
     """
 
     def __init__(
@@ -36,7 +29,7 @@ class QuantizationModifier(BaseModifier):
         compute_scales: bool = True,
     ):
         self.scheme = scheme
-        self.targets = targets       # None → 모든 nn.Linear 대상
+        self.targets = targets
         self.ignore = ignore or []
         self.compute_scales = compute_scales
         self.model: Optional[nn.Module] = None
@@ -57,8 +50,8 @@ class QuantizationModifier(BaseModifier):
     def initialize(self, model: nn.Module) -> None:
         """nn.Linear → FakeQuantLinear 교체.
 
-        compute_scales=True (기본): weight observer로 weight scale 즉시 산출 — 압축 흐름.
-        compute_scales=False: 구조만 생성, scale은 state_dict 로드 후 채움 — load 흐름.
+        compute_scales=True (기본): weight observer로 weight scale 즉시 산출 — RTN 흐름.
+        compute_scales=False: 구조만 생성, scale은 calibrate에서 채움 — GPTQ 흐름.
         """
         self.model = model
         to_replace = [
@@ -70,9 +63,6 @@ class QuantizationModifier(BaseModifier):
         for name, mod in to_replace:
             fql = FakeQuantLinear.from_float(mod, self.scheme)
             if self.compute_scales:
-                # weight도 activation과 같은 observer를 거친다 — 정적 텐서라 update() 1회.
-                # observer를 weight.device로 옮기고 결과 scale도 device를 맞춘다
-                # (Percentile/MSE는 _data를 CPU로 모아 결과가 CPU에 남는다).
                 wobs = build_observer(self.scheme.weight).to(fql.weight.device)
                 wobs.update(fql.weight.detach())
                 w_scale, w_zp = wobs.compute_scale_zp()
@@ -83,6 +73,29 @@ class QuantizationModifier(BaseModifier):
             for part in parent_path:
                 parent = getattr(parent, part)
             setattr(parent, attr, fql)
+
+    def finalize(self) -> None:
+        """observer 제거, scale buffer만 남김."""
+        assert self.model is not None, "initialize(model)을 먼저 호출해야 합니다."
+        for mod in self.model.modules():
+            if isinstance(mod, FakeQuantLinear):
+                mod.input_observer = None
+
+
+class QuantizationModifier(QuantizationMixin, BaseModifier):
+    """nn.Linear를 FakeQuantLinear로 교체하고 observer로 scale을 산출한다.
+
+    weight·activation 모두 동일한 observer 추상화를 거친다 — clip range는
+    scheme.{weight,activation}.calibration_method(minmax/percentile/mse)가 정하고,
+    rounding은 양쪽 다 round-to-nearest(RTN)다.
+
+    Lifecycle:
+        initialize(model): nn.Linear → FakeQuantLinear 교체 + weight observer로
+                           weight scale 산출 (compute_scales=True 기본).
+        calibrate(dataloader): activation observer로 input_scale/input_zero_point 계산
+                               (scheme.activation이 None이거나 dynamic이면 no-op).
+        finalize(): observer 제거, scale buffer만 남김.
+    """
 
     def calibrate(
         self,
@@ -135,10 +148,3 @@ class QuantizationModifier(BaseModifier):
                 # CPU로 모아 결과가 CPU에 남을 수 있음 (device_map="auto" 호환).
                 mod.input_scale = scale.to(mod.weight.device)
                 mod.input_zero_point = zp.to(mod.weight.device)
-
-    def finalize(self) -> None:
-        """observer 제거, scale buffer만 남김."""
-        assert self.model is not None, "initialize(model)을 먼저 호출해야 합니다."
-        for mod in self.model.modules():
-            if isinstance(mod, FakeQuantLinear):
-                mod.input_observer = None

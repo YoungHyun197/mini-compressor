@@ -2,11 +2,12 @@
 from .awq import AWQModifier
 from .base import BaseModifier
 from .gptq import GPTQModifier
-from .quantization import QuantizationModifier
+from .quantization import QuantizationMixin, QuantizationModifier
 from .smoothquant import SmoothQuantModifier
 
 __all__ = [
     "BaseModifier",
+    "QuantizationMixin",
     "QuantizationModifier",
     "SmoothQuantModifier",
     "GPTQModifier",

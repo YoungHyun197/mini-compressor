@@ -13,7 +13,7 @@
 - [x] `mini_compressor/recipes.py` — RECIPE_REGISTRY (preset 진입점)
 - [x] `mini_compressor/compressor.py` — Compressor (modifier list 진입점)
 - [x] `mini_compressor/serialize.py` — save_pretrained / load_pretrained
-- [x] `tests/` — 6개 파일, 35개 케이스
+- [x] `tests/` — 7개 파일, 39개 케이스
 - [x] `notebooks/` 디렉토리
 
 ---
@@ -142,21 +142,29 @@ composition 패턴 위에 Quark식 선언적 preset 레이어 추가
 
 ---
 
-### Milestone 6-B — GPTQ (다음 작업)
+### Milestone 6-B — GPTQ ✅ 완료
 ```
 modifiers/gptq.py GPTQModifier 실구현
 layer별 Hessian + column-wise weight 최적화
-W4A16 + GPTQ generate 확인
-RTN W4A16 대비 perplexity 비교
+W4A16 + GPTQ unit test (4개) 통과
+RTN W4A16 대비 output MSE 검증
 ```
-변경 파일: `modifiers/gptq.py` (stub → 실구현) 만
+변경 파일: `modifiers/gptq.py` (stub → 실구현), `modifiers/quantization.py` (QuantizationMixin 분리),
+`modifiers/__init__.py`, `compressor.py`, `recipes.py`
 
-- [ ] `GPTQModifier` 실구현 (`modifiers/gptq.py`)
-  - [ ] layer별 Hessian 계산 (calibration data)
-  - [ ] weight column 순서대로 양자화 + 오차 보상
-  - [ ] 결과 weight를 `FakeQuantLinear.weight`에 저장
-- [ ] W4A16 + GPTQ generate 확인
-- [ ] perplexity 비교 (RTN vs GPTQ)
+- [x] `QuantizationMixin` 추출 (`modifiers/quantization.py`) — llm-compressor 패턴
+  - `initialize` / `_should_replace` / `finalize` 공통 mixin으로 분리
+  - `GPTQModifier`와 `QuantizationModifier`가 mixin 상속으로 module replacement 공유
+- [x] `GPTQModifier(QuantizationMixin, BaseModifier)` 실구현 (`modifiers/gptq.py`)
+  - forward pre-hook으로 layer별 Hessian `H = 2·XᵀX` 누적
+  - dead column 처리 + dampening + Cholesky inverse (`H → H⁻¹ → Hinv_upper`)
+  - per-group block-column loop: absmax scale → column 양자화 → intra/inter-group 오차 전파
+  - 결과 `Q`(dequantized float)를 `weight.data`에, `scale`을 `weight_scale`에 저장
+- [x] `w4a16_gptq` recipe 추가 (`recipes.py`)
+- [x] `Compressor._find_quantization_modifier` → `isinstance(m, QuantizationMixin)` — GPTQ save 지원
+- [x] `tests/test_gptq.py` 4개 테스트 통과
+  - replaces_linear, scale_shape, weight_on_grid, mse_leq_rtn
+- [ ] W4A16 GPTQ Qwen3-0.6B perplexity 측정 (다음 단계)
 
 ---
 
@@ -300,7 +308,7 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 - [x] W8A8 static perplexity 측정 — 27.75 (+9.59)
 - [x] W8A8 dynamic perplexity 측정 — 18.48 (+0.32)
 - [x] W8A8 + SmoothQuant perplexity 측정 — 23.67 (`demo.py --ppl`, 5 샘플)
-- [ ] W4A16 GPTQ perplexity 측정 (Milestone 6-B 완료 시)
+- [ ] W4A16 GPTQ perplexity 측정 (M6-B 구현 완료, PPL 측정 대기)
 - [x] 비교 표 README에 추가
 
 ---
@@ -380,7 +388,7 @@ demo.py 작성
 | per-token dynamic quantization | **구현 완료** | `W8A8_DYNAMIC` preset — `granularity="per_token"` + `dynamic=True`. 런타임에 토큰별 scale 계산, calibration 불필요 |
 | **SmoothQuant** | **구현 완료** | `SmoothQuantModifier` — `Compressor.from_recipe("w8a8_smoothquant")` 또는 modifier list 직접 구성. activation 분포 평탄화 |
 | real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
-| GPTQ | stub 있음 | `GPTQModifier` — NotImplementedError |
+| GPTQ | **구현 완료** | `GPTQModifier` — Hessian 기반 W4A16 weight 최적화. `Compressor.from_recipe("w4a16_gptq")` |
 | AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
 | Sequential calibration | stub 있음 | `calibrate(sequential=True)` — NotImplementedError |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
@@ -407,7 +415,8 @@ demo.py 작성
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
 
 **다음 할 일.**
-1. Milestone 6-B: GPTQ 실제 구현
+1. Milestone 6-B PPL: GPTQ Qwen3-0.6B wikitext-2 perplexity 측정 (RTN 대비 비교)
+2. demo.py에 `--recipe w4a16_gptq` 옵션 추가 (선택)
 
 ---
 

@@ -13,9 +13,9 @@ mini_compressor/
   fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
   modifiers/             — modifier composition pattern (llm-compressor 정렬)
     base.py              — BaseModifier 추상 인터페이스 (initialize/calibrate/finalize)
-    quantization.py      — QuantizationModifier (observer 기반 weight/activation scale, RTN rounding)
+    quantization.py      — QuantizationMixin (module replacement 공통 mixin) + QuantizationModifier (RTN)
     smoothquant.py       — SmoothQuantModifier (실구현)
-    gptq.py              — GPTQModifier (stub)
+    gptq.py              — GPTQModifier (실구현 — Hessian 기반 W4A16 weight 최적화)
     awq.py               — AWQModifier (stub)
   recipes.py             — RECIPE_REGISTRY (preset 이름 → modifier 파이프라인 factory)
   compressor.py          — Compressor (modifier list 수용, from_recipe/compress/save, save_to_hub stub)
@@ -149,7 +149,7 @@ activation: None
 | M13 | observer.py(sync 4종), tests/test_observer_sync.py | 완료 |
 | M6-D | demo.py(--model), notebooks/milestone6d_llama_validation.ipynb | 완료 |
 
-단위 테스트: 35개 통과 (CI 연동)
+단위 테스트: 39개 통과 (CI 연동)
 
 ---
 
@@ -167,8 +167,44 @@ M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 
 
 ## 미완료 / 다음 할 일
 
-- [ ] M6-B: GPTQ (`modifiers/gptq.py` GPTQModifier stub → 실구현)
+- [x] M6-B: GPTQ (`modifiers/gptq.py` GPTQModifier 실구현 완료, PPL 측정 대기)
 - [ ] M6-C: Sequential calibration / Float8 / save_to_hub — stub만 존재
+
+---
+
+## M6-B GPTQ 설계 결정 (2026-05-18)
+
+### 33. QuantizationMixin — llm-compressor 패턴
+
+`QuantizationModifier`에서 module replacement 공통 로직(`initialize`, `_should_replace`, `finalize`)을 `QuantizationMixin`으로 분리.
+`GPTQModifier(QuantizationMixin, BaseModifier)`와 `QuantizationModifier(QuantizationMixin, BaseModifier)` 둘 다 이 mixin을 상속해 module replacement를 재사용한다.
+
+- **이유**: llm-compressor의 `QuantizationMixin` 패턴 그대로 차용. GPTQ도 RTN과 동일한 nn.Linear → FakeQuantLinear 교체 과정이 필요하므로 중복 방지.
+- `GPTQModifier.__init__`은 `compute_scales=False`로 mixin을 초기화 — GPTQ가 직접 scale을 산출하므로 RTN absmax 사전 계산 불필요.
+- `Compressor._find_quantization_modifier`의 isinstance 체크를 `QuantizationMixin`으로 변경 → GPTQ 모델도 `Compressor.save()` 가능.
+
+### 34. GPTQ 알고리즘 — Hessian 수집 + per-group block-column loop
+
+```
+H = 2 Σ xᵢᵀ xᵢ  (pre-hook으로 calibration forward 중 누적)
+dead = diag(H) == 0 → W[:,dead]=0, H[dead,dead]=1
+H += dampening_frac * mean(diag(H)) * I
+Hinv_upper = cholesky(cholesky_inverse(cholesky(H)), upper=True)
+
+for g in range(n_groups):
+  c0, c1 = g*gs, (g+1)*gs
+  s_g = W[:,c0:c1].abs().amax(dim=-1) / qmax  (absmax per output channel)
+  for j in c0..c1-1:
+    q_int = clamp(round(W[:,j]/s_g), qmin, qmax)
+    q_fake = q_int * s_g
+    err = (W[:,j] - q_fake) / Hinv_upper[j,j]
+    W[:,j+1:c1] -= err ⊗ Hinv_upper[j, j+1:c1]  (intra-group)
+  W[:,c1:] -= Err_g @ Hinv_upper[c0:c1, c1:]  (inter-group)
+```
+
+- **scale**: 그룹 시작 시점 working weight(이전 그룹 오차 전파 반영)의 absmax. RTN과 동일 방식이나 working weight 기준이라는 점이 다름.
+- **Hinv_upper 수학적 근거**: `Hinv_upper[j,j] = sqrt([H_F^{-1}]_{jj})` (F = 남은 features 집합). 상삼각 Cholesky 덕분에 trailing submatrix `Hinv_upper[j:, j:]` = `H_F^{-1}`의 Cholesky factor. column 단위 optimal correction이 `U[j, j:]` 한 row 연산으로 축약됨.
+- **calibration n_samples**: `n_samples >= in_features` 여야 Hessian이 full-rank. 부족하면 H가 rank-deficient하고 dampening 후 Hinv에 큰 값이 생겨 GPTQ가 RTN보다 나빠질 수 있음.
 
 ---
 

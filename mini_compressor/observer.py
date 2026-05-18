@@ -1,4 +1,4 @@
-# activation 통계 수집 및 scale/zero_point 계산 observer 모듈
+# weight/activation 통계 수집 및 scale/zero_point 계산 observer 모듈
 from __future__ import annotations
 
 import torch
@@ -17,7 +17,7 @@ def _dist_active() -> bool:
 def _sync_data(data: list[torch.Tensor]) -> list[torch.Tensor]:
     """rank별 raw 통계 데이터 리스트를 all_gather해 전역 리스트로 합친다.
 
-    Percentile/MSE/KL은 raw activation을 모아 compute_scale_zp에서 비결합적 계산
+    Percentile/MSE/KL은 raw 데이터를 모아 compute_scale_zp에서 비결합적 계산
     (percentile·grid-search·histogram)을 한다. 부분 통계로는 병합이 불가능하므로
     raw 데이터를 전 rank가 공유해 동일한 전역 결과를 내도록 한다.
     분산 환경이 아니면 입력을 그대로 돌려준다 (no-op).
@@ -29,13 +29,44 @@ def _sync_data(data: list[torch.Tensor]) -> list[torch.Tensor]:
     return [t for rank_data in gathered for t in rank_data]
 
 
+def _to_units(t: torch.Tensor, spec: QuantizationSpec) -> torch.Tensor:
+    """텐서를 양자화 단위 기준 (단위..., 단위내_원소) 형태로 재배열한다.
+
+    scale은 단위 하나당 1개다. 마지막 축이 단위 내부 원소가 되도록 정리하면
+    amin/amax/quantile(dim=-1) 한 줄로 granularity와 무관하게 단위별 통계를 뽑을 수 있다.
+        per_tensor  : (N,)         — 단위 1개
+        per_channel : (out, in)    — 출력 채널마다 단위
+        per_group   : (out, G, gs) — 채널×그룹마다 단위
+    """
+    g = spec.granularity
+    if g == "per_tensor":
+        return t.reshape(-1)
+    if g == "per_channel":
+        return t.reshape(t.shape[0], -1)
+    if g == "per_group":
+        return t.reshape(t.shape[0], -1, spec.group_size)
+    raise ValueError(
+        f"observer가 지원하지 않는 granularity: '{g}'. "
+        f"per_tensor / per_channel / per_group 중 하나여야 합니다."
+    )
+
+
 class BaseObserver(nn.Module):
-    """Observer 공통 인터페이스."""
+    """Observer 공통 인터페이스 — weight·activation이 동일 추상화를 공유한다.
+
+    생성 시점에 spec(QuantizationSpec)을 받아 granularity를 인지하므로,
+    per_tensor activation과 per_channel/per_group weight를 같은 클래스로 처리한다.
+    weight는 정적 텐서라 update()를 1회 호출, activation은 calibration forward마다 호출한다.
+    """
+
+    def __init__(self, spec: QuantizationSpec):
+        super().__init__()
+        self.spec = spec
 
     def update(self, x: torch.Tensor) -> None:
         raise NotImplementedError
 
-    def compute_scale_zp(self, spec: QuantizationSpec) -> Tuple[torch.Tensor, torch.Tensor]:
+    def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
         raise NotImplementedError
 
     def reset(self) -> None:
@@ -45,46 +76,54 @@ class BaseObserver(nn.Module):
         """Multi-GPU calibration에서 rank 간 통계를 동기화한다 (분산 환경 아니면 no-op)."""
         raise NotImplementedError
 
-    @staticmethod
     def _scale_zp_from_range(
+        self,
         min_val: torch.Tensor,
         max_val: torch.Tensor,
-        spec: QuantizationSpec,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """min/max → scale, zero_point 공통 계산 (zero 포함 보장)."""
+        """min/max → scale, zero_point 공통 계산 (단위별 broadcast, zero 포함 보장)."""
+        spec = self.spec
         min_val = torch.minimum(min_val, torch.zeros_like(min_val))
         max_val = torch.maximum(max_val, torch.zeros_like(max_val))
 
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
 
-        scale = (max_val - min_val) / (qmax - qmin)
-        scale = torch.clamp(scale, min=1e-8)
-
         if spec.symmetric:
+            # 대칭: 표현 범위가 [-qmax·s, qmax·s]이므로 s = max(|min|,|max|)/qmax.
+            # (min-max 폭/2qmax이 아니다 — 한쪽 꼬리가 길면 그쪽이 잘린다.)
+            abs_max = torch.maximum(max_val, -min_val)
+            scale = torch.clamp(abs_max / qmax, min=1e-8)
             zero_point = torch.zeros_like(scale)
         else:
+            scale = torch.clamp((max_val - min_val) / (qmax - qmin), min=1e-8)
             zero_point = torch.clamp(
-                torch.round(qmin - min_val / scale),
-                qmin, qmax,
+                torch.round(qmin - min_val / scale), qmin, qmax,
             )
         return scale, zero_point
 
 
 class MinMaxObserver(BaseObserver):
-    """running min/max 수집 — multi-GPU: all_reduce(MIN/MAX) 한 줄로 동기화 가능."""
+    """running min/max 수집 — multi-GPU: all_reduce(MIN/MAX) 한 줄로 동기화 가능.
 
-    def __init__(self):
-        super().__init__()
+    granularity에 따라 단위별 min/max 벡터를 유지한다 (per_tensor면 0-dim 스칼라).
+    """
+
+    def __init__(self, spec: QuantizationSpec):
+        super().__init__(spec)
         self.register_buffer("min_val", torch.tensor(float("inf")))
         self.register_buffer("max_val", torch.tensor(float("-inf")))
 
     def update(self, x: torch.Tensor) -> None:
-        self.min_val = torch.minimum(self.min_val, x.detach().min())
-        self.max_val = torch.maximum(self.max_val, x.detach().max())
+        units = _to_units(x.detach(), self.spec)
+        cur_min = units.amin(dim=-1)
+        cur_max = units.amax(dim=-1)
+        # 최초 update 시 0-dim inf 버퍼가 단위별 shape으로 broadcast된다.
+        self.min_val = torch.minimum(self.min_val.to(cur_min.device), cur_min)
+        self.max_val = torch.maximum(self.max_val.to(cur_max.device), cur_max)
 
-    def compute_scale_zp(self, spec: QuantizationSpec) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self._scale_zp_from_range(self.min_val, self.max_val, spec)
+    def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self._scale_zp_from_range(self.min_val, self.max_val)
 
     def reset(self) -> None:
         self.min_val.fill_(float("inf"))
@@ -101,21 +140,28 @@ class MinMaxObserver(BaseObserver):
 class PercentileObserver(BaseObserver):
     """percentile 클리핑으로 outlier 제거 — multi-GPU: all_gather 후 전체 분포에서 계산."""
 
-    def __init__(self, percentile: float = 99.9):
-        super().__init__()
+    def __init__(self, spec: QuantizationSpec, percentile: float = 99.9):
+        super().__init__(spec)
         self.percentile = percentile
         self._data: list[torch.Tensor] = []
 
     def update(self, x: torch.Tensor) -> None:
-        self._data.append(x.detach().flatten().cpu())
+        x = x.detach().cpu()
+        # per_tensor는 배치마다 shape이 달라 flatten해 모으고,
+        # per_channel/per_group은 채널 구조를 보존해야 단위별 통계가 가능하다.
+        self._data.append(x.flatten() if self.spec.granularity == "per_tensor" else x)
 
-    def compute_scale_zp(self, spec: QuantizationSpec) -> Tuple[torch.Tensor, torch.Tensor]:
-        all_data = torch.cat(self._data)
+    def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.spec.granularity == "per_tensor":
+            raw = torch.cat(self._data)
+        else:
+            raw = torch.cat(self._data, dim=0)
+        units = _to_units(raw, self.spec)
         lower = (100.0 - self.percentile) / 100.0
         upper = self.percentile / 100.0
-        min_val = torch.quantile(all_data, lower)
-        max_val = torch.quantile(all_data, upper)
-        return self._scale_zp_from_range(min_val, max_val, spec)
+        min_val = torch.quantile(units, lower, dim=-1)
+        max_val = torch.quantile(units, upper, dim=-1)
+        return self._scale_zp_from_range(min_val, max_val)
 
     def reset(self) -> None:
         self._data.clear()
@@ -126,43 +172,48 @@ class PercentileObserver(BaseObserver):
 
 
 class MSEObserver(BaseObserver):
-    """grid-search로 MSE를 최소화하는 scale 탐색 — multi-GPU: 로컬 탐색 후 all_reduce(argmin)."""
+    """grid-search로 양자화 MSE를 최소화하는 clip range 탐색 — 단위마다 독립 탐색.
 
-    def __init__(self, num_grids: int = 100):
-        super().__init__()
+    multi-GPU: raw 데이터를 all_gather한 뒤 전역 분포에서 탐색.
+    """
+
+    def __init__(self, spec: QuantizationSpec, num_grids: int = 100):
+        super().__init__(spec)
         self.num_grids = num_grids
         self._data: list[torch.Tensor] = []
 
     def update(self, x: torch.Tensor) -> None:
-        self._data.append(x.detach().flatten().cpu())
+        x = x.detach().cpu()
+        self._data.append(x.flatten() if self.spec.granularity == "per_tensor" else x)
 
-    def compute_scale_zp(self, spec: QuantizationSpec) -> Tuple[torch.Tensor, torch.Tensor]:
-        all_data = torch.cat(self._data)
-        qmax = 2 ** (spec.num_bits - 1) - 1
-        qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
+    def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        if self.spec.granularity == "per_tensor":
+            raw = torch.cat(self._data)
+        else:
+            raw = torch.cat(self._data, dim=0)
+        units = _to_units(raw, self.spec)  # (단위..., k)
 
-        min_val = torch.minimum(all_data.min(), torch.tensor(0.0))
-        max_val = torch.maximum(all_data.max(), torch.tensor(0.0))
+        qmax = 2 ** (self.spec.num_bits - 1) - 1
+        qmin = -qmax if self.spec.symmetric else -(2 ** (self.spec.num_bits - 1))
 
-        best_scale, best_zp = self._scale_zp_from_range(min_val, max_val, spec)
-        best_mse = float("inf")
+        umin = units.amin(dim=-1)
+        umax = units.amax(dim=-1)
 
-        for alpha in torch.linspace(0.8, 1.0, self.num_grids):
-            cmin = min_val * alpha
-            cmax = max_val * alpha
-            scale = torch.clamp((cmax - cmin) / (qmax - qmin), min=1e-8)
+        best_scale, best_zp = self._scale_zp_from_range(umin, umax)
+        best_err = torch.full_like(best_scale, float("inf"))
 
-            if spec.symmetric:
-                zp = torch.zeros_like(scale)
-            else:
-                zp = torch.clamp(torch.round(qmin - cmin / scale), qmin, qmax)
+        # alpha로 단위별 min/max를 함께 줄여 clip range 후보를 만든다.
+        for alpha in torch.linspace(0.8, 1.0, self.num_grids).tolist():
+            scale, zp = self._scale_zp_from_range(umin * alpha, umax * alpha)
+            s = scale.unsqueeze(-1)
+            z = zp.unsqueeze(-1)
+            q = torch.clamp(torch.round(units / s + z), qmin, qmax)
+            err = ((units - (q - z) * s) ** 2).mean(dim=-1)
 
-            q = torch.clamp(torch.round(all_data / scale + zp), qmin, qmax)
-            mse = ((all_data - (q - zp) * scale) ** 2).mean().item()
-
-            if mse < best_mse:
-                best_mse = mse
-                best_scale, best_zp = scale, zp
+            better = err < best_err
+            best_scale = torch.where(better, scale, best_scale)
+            best_zp = torch.where(better, zp, best_zp)
+            best_err = torch.where(better, err, best_err)
 
         return best_scale, best_zp
 
@@ -175,17 +226,30 @@ class MSEObserver(BaseObserver):
 
 
 class KLDivergenceObserver(BaseObserver):
-    """histogram 기반 KL divergence 최소화로 clip range 탐색 — multi-GPU: histogram bins all_reduce(SUM)."""
+    """histogram 기반 KL divergence 최소화로 clip range 탐색.
 
-    def __init__(self, num_bins: int = 2048):
-        super().__init__()
+    히스토그램은 per_tensor 분포에서만 의미가 있어 per_tensor만 지원한다.
+    per_channel/per_group은 채널마다 별도 히스토그램이 필요해 비용이 비현실적이므로,
+    weight에 kl_divergence를 지정하면 생성 시점에 명확히 거부한다.
+    multi-GPU: raw 데이터를 all_gather한 뒤 전역 분포에서 히스토그램 계산.
+    """
+
+    def __init__(self, spec: QuantizationSpec, num_bins: int = 2048):
+        super().__init__(spec)
+        if spec.granularity != "per_tensor":
+            raise NotImplementedError(
+                "KLDivergenceObserver는 per_tensor만 지원합니다 "
+                f"(요청: '{spec.granularity}'). per_channel/per_group weight에는 "
+                "minmax / percentile / mse 중 하나를 사용하세요."
+            )
         self.num_bins = num_bins
         self._data: list[torch.Tensor] = []
 
     def update(self, x: torch.Tensor) -> None:
         self._data.append(x.detach().flatten().cpu())
 
-    def compute_scale_zp(self, spec: QuantizationSpec) -> Tuple[torch.Tensor, torch.Tensor]:
+    def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        spec = self.spec
         all_data = torch.cat(self._data).float()
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
@@ -243,7 +307,7 @@ class KLDivergenceObserver(BaseObserver):
 
         min_val = torch.tensor(-best_clip_max if spec.symmetric else min(all_data.min().item(), 0.0))
         max_val = torch.tensor(best_clip_max)
-        return self._scale_zp_from_range(min_val, max_val, spec)
+        return self._scale_zp_from_range(min_val, max_val)
 
     def reset(self) -> None:
         self._data.clear()
@@ -261,10 +325,15 @@ OBSERVER_REGISTRY: dict[str, type[BaseObserver]] = {
 }
 
 
-def build_observer(calibration_method: str, **kwargs) -> BaseObserver:
-    if calibration_method not in OBSERVER_REGISTRY:
+def build_observer(spec: QuantizationSpec) -> BaseObserver:
+    """spec.calibration_method에 맞는 observer를 생성한다 (spec 전체를 주입).
+
+    weight·activation 어느 쪽이든 같은 진입점을 쓴다 — 차이는 spec.granularity뿐이다.
+    """
+    method = spec.calibration_method
+    if method not in OBSERVER_REGISTRY:
         raise ValueError(
-            f"Unknown calibration_method '{calibration_method}'. "
+            f"Unknown calibration_method '{method}'. "
             f"Choose from {list(OBSERVER_REGISTRY)}"
         )
-    return OBSERVER_REGISTRY[calibration_method](**kwargs)
+    return OBSERVER_REGISTRY[method](spec)

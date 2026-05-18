@@ -30,9 +30,9 @@
 지원 양자화 기법 (최소 2개 요건 충족):
   필수 구현:
     1. RTN (Round-to-Nearest) — W8A8 scheme
-         weight: absmax per-channel, activation: MinMax observer calibration
+         weight: per-channel observer(기본 MinMax), activation: per-tensor observer calibration
     2. RTN (Round-to-Nearest) — W4A16 scheme
-         weight: absmax per-group, activation: FP16 passthrough
+         weight: per-group observer(기본 MinMax), activation: FP16 passthrough
        ※ W8A8과 W4A16은 동일 알고리즘(RTN)의 다른 config이므로,
          과제 요건 "2개 이상의 양자화 기법" 충족을 위해 아래 추가 기법 구현 권장
 
@@ -395,13 +395,14 @@ W8A8_DYNAMIC = QuantizationScheme(
 ```text
 load
   ↓
-initialize()   — nn.Linear → FakeQuantLinear 교체 (Quark식 module replacement)
+initialize()   — nn.Linear → FakeQuantLinear 교체 + weight observer로 weight scale 계산
+               — (Quark식 module replacement)
   ↓
 [smooth()]     — [SmoothQuant 시] activation 통계 수집 → per-channel s 계산
                — weight에 s 흡수, FakeQuantLinear.weight 값 직접 수정
                — RTN 기본 구현에는 이 단계 없음
   ↓
-calibrate()    — [RTN] observer forward, absmax scale 계산
+calibrate()    — [RTN] activation observer forward, calibration_method별 scale 계산
                — [GPTQ] Hessian 기반 layer-wise weight 최적화 (RTN scale 계산 대체)
                — scheme.activation is None 분기 (W4A16은 activation skip)
                — [sequential 모드] layer 하나씩 GPU 올려 calibrate → CPU offload
@@ -453,11 +454,12 @@ scheme.activation is None 여부로 분기
 | `kl_divergence` | histogram bins | KL divergence 최소 clip range 탐색 | `all_reduce(SUM)` on bins |
 
 **설계 결정:**
-- `BaseObserver` 공통 인터페이스 (`update()` / `compute_scale_zp()`)
+- `BaseObserver` 공통 인터페이스 (`update()` / `compute_scale_zp()`) — 생성 시 spec을 받아 granularity 인지
 - `MinMaxObserver`가 기본값 — tensor 연산 유지로 multi-GPU all_reduce 확장 용이
-- `FakeQuantLinear`가 `calibration_method`에 따라 observer를 직접 인스턴스화 (옵션 C)
+- weight·activation이 동일 observer 공유 — activation observer는 `FakeQuantLinear`가, weight observer는 `QuantizationModifier.initialize()`가 `calibration_method`에 따라 인스턴스화
 - `finalize()`에서 `module.input_observer = None` → state_dict 오염 방지
 - percentile/kl은 메모리 heavy, mse는 grid-search 비용 → POC 기본값은 minmax
+- weight(per_channel·per_group)는 minmax/percentile/mse 지원, kl_divergence는 채널별 히스토그램 비용 때문에 per_tensor(activation) 전용
 
 ### finalize()
 
@@ -674,7 +676,9 @@ def initialize(self, compute_scales: bool = True) -> None:
     for name, mod in to_replace:
         fql = FakeQuantLinear.from_float(mod, self.scheme)
         if compute_scales:
-            fql.weight_scale, fql.weight_zero_point = _compute_weight_scale(...)
+            wobs = build_observer(self.scheme.weight)
+            wobs.update(fql.weight.detach())
+            fql.weight_scale, fql.weight_zero_point = wobs.compute_scale_zp()
         setattr(parent, attr, fql)
 ```
 

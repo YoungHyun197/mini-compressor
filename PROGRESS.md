@@ -8,12 +8,12 @@
 
 - [x] `mini_compressor/schemes.py` — QuantizationSpec, QuantizationScheme, SCHEME_REGISTRY
 - [x] `mini_compressor/fake_quant_linear.py` — FakeQuantLinear (flat buffer 방식)
-- [x] `mini_compressor/observer.py` — 4종 observer + multi-GPU sync
+- [x] `mini_compressor/observer.py` — 4종 observer (weight·activation 공용, granularity-aware) + multi-GPU sync
 - [x] `mini_compressor/modifiers/` — BaseModifier + 알고리즘별 클래스 (composition pattern)
 - [x] `mini_compressor/recipes.py` — RECIPE_REGISTRY (preset 진입점)
 - [x] `mini_compressor/compressor.py` — Compressor (modifier list 진입점)
 - [x] `mini_compressor/serialize.py` — save_pretrained / load_pretrained
-- [x] `tests/` — 6개 파일, 32개 케이스
+- [x] `tests/` — 6개 파일, 35개 케이스
 - [x] `notebooks/` 디렉토리
 
 ---
@@ -87,7 +87,7 @@ generate 확인
 - [x] `QuantizationSpec`에 `calibration_method: str = "minmax"` 필드 추가
 - [x] `FakeQuantLinear`가 `calibration_method`에 따라 observer 인스턴스화
 - [x] `QuantizationModifier` 구현 (M5+M7 병합)
-  - [x] `initialize()` — nn.Linear → FakeQuantLinear 교체 + weight scale RTN 계산 (per_channel / per_group / per_tensor)
+  - [x] `initialize()` — nn.Linear → FakeQuantLinear 교체 + weight observer로 weight scale 산출 (per_channel / per_group / per_tensor)
   - [x] `calibrate()` — observer forward pass로 scale/zp 계산, activation=None 시 early return
   - [x] `finalize()` — observer 제거, scale buffer만 남김
 - [x] `input_scale`, `input_zero_point` buffer 채우기
@@ -211,7 +211,7 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
 
 #### 8-1. modifier.py 수정
 - [x] `initialize(compute_scales: bool = True)` 파라미터 추가
-  - True (기본): 기존 동작 그대로 (weight scale RTN 계산)
+  - True (기본): 기존 동작 그대로 (weight observer로 weight scale 산출)
   - False: FakeQuantLinear 구조만 생성, scale 계산 생략 (load 흐름 전용)
 
 #### 8-2. serialize.py 구현
@@ -387,6 +387,17 @@ demo.py 작성
 | Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
 | HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
 | Multi-model 검증 | **완료** | TinyLlama-1.1B (LLaMA 아키텍처) — 라이브러리 코드 수정 없이 4 recipe 동작 |
+
+---
+
+## 2026-05-18 — weight observer 통합 (granularity-aware)
+
+- [x] observer를 granularity-aware로 통합 — weight·activation이 동일 추상화 공유 (llm-compressor / AMD Quark 표준 패턴)
+- [x] `BaseObserver(spec)` 생성자에 spec 주입, `_to_units` 헬퍼로 per_tensor/per_channel/per_group 단위 정리
+- [x] `_compute_weight_scale` 삭제 → `QuantizationModifier.initialize()`가 weight observer를 1회 호출
+- [x] weight도 `calibration_method`(minmax / percentile / mse) 선택 가능 — KL은 per_tensor(activation) 전용
+- [x] `_scale_zp_from_range` 대칭 분기 교정 (`max(|min|,|max|)/qmax`) — weight minmax는 기존 `absmax/qmax`와 수치 동일
+- [x] 단위 테스트 35개 통과 (weight observer 3개 추가)
 
 ---
 

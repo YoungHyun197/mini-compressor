@@ -24,7 +24,7 @@ class FakeQuantLinear(nn.Linear):
         # dynamic=True면 런타임 scale 계산 → observer 불필요
         # calibration 중에만 존재, finalize() 후 None으로 제거 → state_dict 오염 방지
         if scheme is not None and scheme.activation is not None and not scheme.activation.dynamic:
-            self.input_observer: BaseObserver | None = build_observer(scheme.activation.calibration_method)
+            self.input_observer: BaseObserver | None = build_observer(scheme.activation)
         else:
             self.input_observer = None
 

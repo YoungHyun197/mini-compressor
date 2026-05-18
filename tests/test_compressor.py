@@ -43,8 +43,8 @@ def test_compress_w4a16_scale_shape():
     compressor.compress(model)
 
     proj = model.proj
-    # per_group: [out_features, in_features // group_size] 이지만 in_features=8 < group_size=128
-    # → fallback 없이 reshape가 가능한지는 _compute_weight_scale에서 처리
+    # per_group: scale shape은 [out_features, in_features // group_size].
+    # in_features=256, group_size=128 → 그룹 2개. weight observer가 _to_units로 분할 처리.
     assert proj.weight_scale is not None
 
 

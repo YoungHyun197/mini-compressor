@@ -13,7 +13,7 @@ mini_compressor/
   fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
   modifiers/             — modifier composition pattern (llm-compressor 정렬)
     base.py              — BaseModifier 추상 인터페이스 (initialize/calibrate/finalize)
-    quantization.py      — QuantizationModifier (RTN)
+    quantization.py      — QuantizationModifier (observer 기반 weight/activation scale, RTN rounding)
     smoothquant.py       — SmoothQuantModifier (실구현)
     gptq.py              — GPTQModifier (stub)
     awq.py               — AWQModifier (stub)
@@ -35,12 +35,14 @@ demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-
 - **이유**: `_weight_quantizer.scale` 같은 중첩 경로 대신 flat key로 state_dict를 단순하게 유지. HF save/load 시 key 매핑이 명확해짐.
 - **참고**: Furiosa llm-compressor 스타일.
 
-### 2. observer — FakeQuantLinear가 소유
+### 2. observer — activation은 FakeQuantLinear, weight는 modifier가 소유
 
-`FakeQuantLinear.__init__`에서 `input_observer`를 생성하고, `forward()`에서 `observer.update(x)` 호출.
+activation observer는 `FakeQuantLinear.__init__`에서 생성하고 `forward()`에서 `observer.update(x)` 호출. calibration이 streaming(여러 배치 누적)이라 layer가 직접 들고 있어야 한다.
+weight observer는 `QuantizationModifier.initialize()`에서 transient하게 생성·`update()` 1회 호출 후 폐기. weight는 정적 텐서라 streaming 수명주기가 불필요하다.
 
-- **이유**: modifier가 observer를 직접 관리하지 않아도 됨. `calibrate()`는 model forward만 돌리면 각 layer가 알아서 통계 수집.
+- **이유**: modifier가 activation observer를 직접 관리하지 않아도 됨. `calibrate()`는 model forward만 돌리면 각 layer가 알아서 통계 수집.
 - **결과**: modifier.calibrate()는 forward loop + 루프 후 scale 채우기만 담당.
+- 상세는 아래 [32] 참고.
 
 ### 3. QuantizationModifier — initialize / calibrate / finalize 3단계
 
@@ -49,16 +51,18 @@ demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-
 - M6(W4A16 RTN)은 modifier 완성 후 진행.
 - M7은 별도 milestone으로 두지 않음.
 
-### 4. weight scale 계산 (RTN)
+### 4. weight scale 계산 — weight observer 경유
 
-| granularity | 수식 | scale shape |
+weight도 activation과 같은 observer를 거친다 (상세는 아래 [32]). 아래 표는 기본값 `minmax` 기준.
+
+| granularity | scale (minmax) | scale shape |
 |-------------|------|-------------|
 | per_channel | `max(\|w\|, dim=1) / qmax` | `[out_features]` |
 | per_group   | `max(\|w_grouped\|, dim=2) / qmax` | `[out_features, in_features // group_size]` |
 | per_tensor  | `max(\|w\|) / qmax` | scalar |
 
 - symmetric이므로 zero_point = 0.
-- `_compute_weight_scale()`은 `modifiers/quantization.py` 모듈 수준 함수로 분리 (QuantizationModifier 메서드 아님).
+- `QuantizationModifier.initialize()`가 `build_observer(scheme.weight)`로 weight observer를 1회 호출. `calibration_method`로 minmax/percentile/mse 선택 가능.
 
 ### 5. targets / ignore 우선순위
 
@@ -89,13 +93,13 @@ W4A16는 `scheme.activation = None`이므로 calibrate()에서 즉시 return.
 
 ### 핵심 설계 결정
 
-- **observer 선택 방식**: `QuantizationSpec.calibration_method` 문자열 → `build_observer()`가 `OBSERVER_REGISTRY`에서 클래스 조회. modifier나 FakeQuantLinear가 Observer 클래스를 직접 import하지 않아도 됨.
+- **observer 선택 방식**: `build_observer(spec)`가 `spec.calibration_method`로 `OBSERVER_REGISTRY`에서 클래스를 조회해 생성. modifier나 FakeQuantLinear가 Observer 클래스를 직접 import하지 않아도 됨.
 
 - **MinMaxObserver의 buffer**: `min_val`, `max_val`을 `register_buffer`로 등록. `model.to(device)` 시 자동으로 같은 device로 이동.
 
 - **PercentileObserver / MSEObserver / KLDivergence**: raw data를 CPU list로 수집 (`_data: list[torch.Tensor]`). GPU 메모리 절약 목적. compute 시점에 `torch.cat`으로 합침.
 
-- **`_scale_zp_from_range()` 공통 메서드**: min/max → scale, zero_point 계산 로직을 BaseObserver static method로 분리. 모든 observer가 공유.
+- **`_scale_zp_from_range()` 공통 메서드**: min/max → scale, zero_point 계산 로직을 BaseObserver 메서드로 분리 (생성 시 받은 spec 사용, 단위별 broadcast). 모든 observer가 공유.
 
 - **zero 포함 보장**: `min_val = min(min_val, 0)`, `max_val = max(max_val, 0)`. 실수값 0이 반드시 표현 가능한 범위 내에 들어오도록 강제.
 
@@ -145,7 +149,7 @@ activation: None
 | M13 | observer.py(sync 4종), tests/test_observer_sync.py | 완료 |
 | M6-D | demo.py(--model), notebooks/milestone6d_llama_validation.ipynb | 완료 |
 
-단위 테스트: 32개 통과 (CI 연동)
+단위 테스트: 35개 통과 (CI 연동)
 
 ---
 
@@ -154,7 +158,7 @@ activation: None
 원래 M6에서 구현 예정이던 W4A16 RTN per-group fake quant가 M5 구현 시점에 이미 완성됨.
 
 - `_group_fake_quant()`: fake_quant_linear.py에 구현
-- `_compute_weight_scale()` per_group 분기: modifiers/quantization.py에 구현
+- per_group weight scale 분기: 현재는 weight observer + `_to_units()`가 담당 (observer.py)
 - `test_initialize_w4a16_scale_shape`: scale shape 검증 통과
 
 M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 항목은 M5 완료로 처리.
@@ -278,7 +282,9 @@ def initialize(self, compute_scales: bool = True) -> None:
     for name, mod in to_replace:
         fql = FakeQuantLinear.from_float(mod, self.scheme)
         if compute_scales:
-            fql.weight_scale, fql.weight_zero_point = _compute_weight_scale(...)
+            wobs = build_observer(self.scheme.weight)
+            wobs.update(fql.weight.detach())
+            fql.weight_scale, fql.weight_zero_point = wobs.compute_scale_zp()
         setattr(parent, attr, fql)
 ```
 
@@ -566,11 +572,29 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **산출물**: `demo.py`에 `--model` 인자 추가(end-to-end 데모를 모델 비종속화), `notebooks/milestone6d_llama_validation.ipynb`(실행 결과 포함). 라이브러리 코드 변경 없음 — 이게 M6-D의 핵심 증거.
 
+## 2026-05-18 — weight observer 통합 (granularity-aware)
+
+### 32. weight도 observer 경유 — observer를 granularity-aware로 통합
+
+**문제**: weight scale이 `_compute_weight_scale`의 absmax 고정이라 `calibration_method`(percentile/mse)가 weight에선 죽은 필드였다. observer는 activation만 거쳤다.
+
+**결정**: observer를 granularity-aware로 통합해 weight·activation이 같은 추상화를 공유 — llm-compressor(단일 Observer가 strategy 인지)·AMD Quark(granularity별 observer)의 공통 패턴.
+- `BaseObserver(spec)` — 생성 시 spec을 받아 granularity 인지. `compute_scale_zp()`는 무인자.
+- `_to_units(t, spec)` 헬퍼 — per_tensor/per_channel/per_group을 (단위..., 원소) 형태로 정리해 `amin/amax/quantile(dim=-1)` 한 줄로 처리.
+- `_compute_weight_scale` 함수 삭제 → `QuantizationModifier.initialize()`가 weight observer를 1회 호출.
+- KL은 per_tensor 전용 — per-channel 히스토그램 비용이 비현실적이라 생성 시점에 거부.
+
+**대칭 분기 교정**: `_scale_zp_from_range`의 symmetric scale을 `(max-min)/2qmax` → `max(|min|,|max|)/qmax`로 수정. weight를 observer로 보내면서 드러난 잠재 버그 — 한쪽 꼬리가 길면 그쪽이 잘리던 문제. weight minmax 결과는 기존 `absmax/qmax`와 수치 동일(회귀 없음, 검증 완료).
+
+**검증**: 단위 테스트 35개 통과(기존 32 + weight observer 3). weight minmax가 기존 공식과 per_channel·per_group 모두 `allclose`. outlier 채널에서 percentile/mse가 minmax보다 좁은 scale을 잡음을 확인.
+
+영향 파일: `observer.py`(전면), `fake_quant_linear.py`(build 호출), `modifiers/quantization.py`(weight observer), `tests/test_observer_sync.py`·`test_modifier.py`.
+
 ### 작업 위치 (2026-05-18 갱신)
 
-- main: `8b523c2` — M1–M13 + M6-A(+recipe) + M6-D 전부 머지 완료 (PR #1~#5). 모든 feature 브랜치 정리됨.
-- working tree: 4개 문서(README/PROGRESS/road_map/context-notes) 감사·동기화 수정만 uncommitted.
-- 단위 테스트 32개 통과.
+- main: `8b523c2` — M1–M13 + M6-A(+recipe) + M6-D 전부 머지 완료 (PR #1~#5).
+- working tree: weight observer 통합 + 4개 문서 동기화 uncommitted.
+- 단위 테스트 35개 통과.
 
 ### 다음 작업
 

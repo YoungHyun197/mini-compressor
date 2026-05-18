@@ -65,8 +65,9 @@ class FakeQuantLinear(nn.Linear):
 
         qmax = 2 ** (spec.num_bits - 1) - 1
         qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
-        s = self.weight_scale
-        zp = self.weight_zero_point if self.weight_zero_point is not None else torch.zeros_like(s)
+        s = self.weight_scale.to(w.dtype)
+        zp = (self.weight_zero_point.to(w.dtype)
+              if self.weight_zero_point is not None else torch.zeros_like(s))
 
         if spec.granularity == "per_channel":
             s = s.view(-1, *([1] * (w.dim() - 1)))
@@ -105,8 +106,9 @@ class FakeQuantLinear(nn.Linear):
         else:
             if self.input_scale is None:
                 return x
-            s = self.input_scale
-            zp = self.input_zero_point if self.input_zero_point is not None else torch.zeros_like(s)
+            s = self.input_scale.to(x.dtype)
+            zp = (self.input_zero_point.to(x.dtype)
+                  if self.input_zero_point is not None else torch.zeros_like(s))
 
         q = torch.clamp(torch.round(x / s + zp), qmin, qmax)
         return (q - zp) * s

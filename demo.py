@@ -1,7 +1,7 @@
-# mini-compressor 데모 — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant 압축·생성·저장 round-trip
+# mini-compressor 데모 — W4A16 / W4A16-GPTQ / W8A8 / W8A8-dynamic / W8A8+SmoothQuant 압축·생성·저장 round-trip
 """
 사용법:
-    python demo.py                        # 기본: 네 scheme 생성 비교
+    python demo.py                        # 기본: 다섯 scheme 생성 비교
     python demo.py --save /tmp/demo_save  # W4A16 저장 + 로드 round-trip 추가
     python demo.py --ppl                  # wikitext-2 perplexity 측정 추가 (시간 소요)
 """
@@ -35,6 +35,28 @@ def generate(model, tokenizer, prompt=PROMPT, max_new_tokens=40):
     with torch.no_grad():
         out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
     return tokenizer.decode(out[0], skip_special_tokens=True)
+
+
+def _load_gptq_calib(
+    tokenizer, n_seqs: int = 8, seq_len: int = 512, seed: int = 42
+) -> list:
+    """GPTQ Hessian 수집용 wikitext-2 train 시퀀스를 준비한다.
+
+    n_seqs * seq_len 개의 토큰을 제공해 largest layer in_features >= hidden_size 조건을 충족한다.
+    """
+    from datasets import load_dataset
+    ds = load_dataset("wikitext", "wikitext-2-raw-v1", split="train")
+    text = "\n\n".join(x for x in ds["text"] if x.strip())
+    tokens = tokenizer(text, return_tensors="pt").input_ids[0]
+
+    gen = torch.Generator()
+    gen.manual_seed(seed)
+    batches = []
+    for _ in range(n_seqs):
+        start = torch.randint(0, len(tokens) - seq_len, (1,), generator=gen).item()
+        chunk = tokens[start : start + seq_len].unsqueeze(0).to(DEVICE)
+        batches.append({"input_ids": chunk})
+    return batches
 
 
 def compute_perplexity(model, encodings, stride=512, max_len=2048):
@@ -79,7 +101,7 @@ def main():
         encodings = tokenizer(text, return_tensors="pt")
 
     # ── 1. FP16 baseline ──────────────────────────────────────────────────────
-    print("\n[1/5] FP16 baseline")
+    print("\n[1/6] FP16 baseline")
     model = load_model(args.model)
     text_fp = generate(model, tokenizer)
     print(f"  {text_fp}")
@@ -91,7 +113,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ── 2. W4A16 ─────────────────────────────────────────────────────────────
-    print("\n[2/5] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
+    print("\n[2/6] W4A16 — weight-only INT4 (RTN, calibration 불필요)")
     model_w4 = load_model(args.model)
     Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"]).compress(model_w4)
     text_w4 = generate(model_w4, tokenizer)
@@ -118,8 +140,25 @@ def main():
     del model_w4
     torch.cuda.empty_cache()
 
-    # ── 3. W8A8 static ────────────────────────────────────────────────────────
-    print("\n[3/5] W8A8 static — weight+activation INT8 (MinMax calibration)")
+    # ── 3. W4A16 GPTQ ─────────────────────────────────────────────────────────
+    print("\n[3/6] W4A16 GPTQ — Hessian 기반 오차 전파 (wikitext-2 train calibration)")
+    model_gptq = load_model(args.model)
+    print("  캘리브레이션 데이터 준비 중...")
+    gptq_calib = _load_gptq_calib(tokenizer)
+    Compressor.from_recipe("w4a16_gptq", targets=["Linear"], ignore=["lm_head"]).compress(
+        model_gptq, dataloader=gptq_calib
+    )
+    text_gptq = generate(model_gptq, tokenizer)
+    print(f"  {text_gptq}")
+    if args.ppl:
+        print("  PPL 측정 중...")
+        ppl_results["W4A16 GPTQ"] = compute_perplexity(model_gptq, encodings)
+        print(f"  PPL = {ppl_results['W4A16 GPTQ']:.2f}")
+    del model_gptq
+    torch.cuda.empty_cache()
+
+    # ── 4. W8A8 static ────────────────────────────────────────────────────────
+    print("\n[4/6] W8A8 static — weight+activation INT8 (MinMax calibration)")
     model_w8 = load_model(args.model)
     calib_texts = [
         "The quick brown fox jumps over the lazy dog.",
@@ -144,8 +183,8 @@ def main():
     del model_w8
     torch.cuda.empty_cache()
 
-    # ── 4. W8A8 dynamic ───────────────────────────────────────────────────────
-    print("\n[4/5] W8A8 dynamic — per-token INT8 (calibration 불필요)")
+    # ── 5. W8A8 dynamic ───────────────────────────────────────────────────────
+    print("\n[5/6] W8A8 dynamic — per-token INT8 (calibration 불필요)")
     model_dyn = load_model(args.model)
     Compressor.from_recipe("w8a8_dynamic", targets=["Linear"], ignore=["lm_head"]).compress(model_dyn)
     text_dyn = generate(model_dyn, tokenizer)
@@ -157,8 +196,8 @@ def main():
     del model_dyn
     torch.cuda.empty_cache()
 
-    # ── 5. W8A8 + SmoothQuant ─────────────────────────────────────────────────
-    print("\n[5/5] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 static")
+    # ── 6. W8A8 + SmoothQuant ─────────────────────────────────────────────────
+    print("\n[6/6] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 static")
     model_sq = load_model(args.model)
     Compressor.from_recipe(
         "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]
@@ -184,7 +223,8 @@ def main():
     # ── generate 결과 요약 ────────────────────────────────────────────────────
     print("\n" + "=" * 60)
     print(f"  [FP16]              {text_fp[:80]}")
-    print(f"  [W4A16]             {text_w4[:80]}")
+    print(f"  [W4A16 RTN]         {text_w4[:80]}")
+    print(f"  [W4A16 GPTQ]        {text_gptq[:80]}")
     print(f"  [W8A8 static]       {text_w8[:80]}")
     print(f"  [W8A8 dynamic]      {text_dyn[:80]}")
     print(f"  [W8A8 + SmoothQuant]{text_sq[:80]}")

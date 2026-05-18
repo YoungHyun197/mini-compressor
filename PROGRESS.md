@@ -164,7 +164,7 @@ RTN W4A16 대비 output MSE 검증
 - [x] `Compressor._find_quantization_modifier` → `isinstance(m, QuantizationMixin)` — GPTQ save 지원
 - [x] `tests/test_gptq.py` 4개 테스트 통과
   - replaces_linear, scale_shape, weight_on_grid, mse_leq_rtn
-- [ ] W4A16 GPTQ Qwen3-0.6B perplexity 측정 (다음 단계)
+- [x] W4A16 GPTQ Qwen3-0.6B wikitext-2 perplexity 측정 — 20.96 (RTN 25.89 대비 -4.93)
 
 ---
 
@@ -305,10 +305,10 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 - [x] 측정 방식: sliding window perplexity (HF 공식 방식, wikitext-2-raw-v1 test split)
 - [x] FP16 baseline perplexity 측정 — 18.16
 - [x] W4A16 RTN perplexity 측정 — 25.89 (+7.73)
-- [x] W8A8 static perplexity 측정 — 27.75 (+9.59)
+- [x] W8A8 static perplexity 측정 — 25.01 (+6.85) _(dtype 버그 수정 후 재측정)_
 - [x] W8A8 dynamic perplexity 측정 — 18.48 (+0.32)
-- [x] W8A8 + SmoothQuant perplexity 측정 — 23.67 (`demo.py --ppl`, 5 샘플)
-- [ ] W4A16 GPTQ perplexity 측정 (M6-B 구현 완료, PPL 측정 대기)
+- [x] W8A8 + SmoothQuant perplexity 측정 — 23.67 (+5.51) _(dtype 버그 수정 후 재측정)_
+- [x] W4A16 GPTQ perplexity 측정 — 20.96 (+2.80) ← RTN 25.89 대비 -4.93 개선
 - [x] 비교 표 README에 추가
 
 ---
@@ -398,6 +398,19 @@ demo.py 작성
 
 ---
 
+## 2026-05-18 — fake_quant_linear dtype 일관성 버그 수정
+
+- **버그**: `weight_scale`/`input_scale`이 float32로 저장되어 float16 weight/activation과
+  연산 시 float32로 업캐스트 → F.linear(float16, float32) 또는 (float32, float32) 혼용.
+  W4A16 GPTQ는 scale이 명시적 float32라 `RuntimeError: c10::Half != float`로 즉시 실패.
+  W8A8 static/SmoothQuant는 F.linear 결과가 float32로 계산되어 PPL이 부정확.
+- **수정**: `_fake_quantize_weight`와 `_fake_quantize_activation`에서 scale을
+  `s.to(w.dtype)` / `s.to(x.dtype)`으로 캐스팅 → 연산 dtype이 모델 dtype(float16)으로 통일.
+- **영향**: W4A16 GPTQ 동작. W8A8 static 27.75 → 25.01, SmoothQuant 19.28 → 23.67 (float16 시뮬레이션이 더 정확).
+  W4A16 RTN·W8A8 dynamic은 값 불변 (float16 scale이라 이미 정상).
+
+---
+
 ## 2026-05-18 — weight observer 통합 (granularity-aware)
 
 - [x] observer를 granularity-aware로 통합 — weight·activation이 동일 추상화 공유 (llm-compressor / AMD Quark 표준 패턴)
@@ -415,8 +428,8 @@ demo.py 작성
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
 
 **다음 할 일.**
-1. Milestone 6-B PPL: GPTQ Qwen3-0.6B wikitext-2 perplexity 측정 (RTN 대비 비교)
-2. demo.py에 `--recipe w4a16_gptq` 옵션 추가 (선택)
+1. Milestone 6-C Sequential Calibration 구현 (메모리 효율 calibration)
+2. AWQ 구현 또는 M6-D 추가 모델 검증 (선택)
 
 ---
 

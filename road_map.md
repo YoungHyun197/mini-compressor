@@ -817,11 +817,13 @@ dead column + dampening + Cholesky inverse
 per-group block-column 양자화 + intra/inter-group 오차 전파
 w4a16_gptq recipe 추가
 unit test 4개: replaces_linear / scale_shape / weight_on_grid / mse_leq_rtn
+Qwen3-0.6B wikitext-2 PPL 측정 — GPTQ 20.96 vs RTN 25.89 (-4.93)
+fake_quant_linear dtype 버그 수정 (scale float16 캐스팅 일관화)
 ```
 
 변경 파일: `modifiers/gptq.py`, `modifiers/quantization.py`, `modifiers/__init__.py`,
-`compressor.py`, `recipes.py`, `tests/test_gptq.py`  
-변경 없음: `fake_quant_linear.py`, `schemes.py`, `serialize.py`  
+`compressor.py`, `recipes.py`, `tests/test_gptq.py`, `fake_quant_linear.py`, `demo.py`  
+변경 없음: `schemes.py`, `serialize.py`  
 테스트: 39개 통과 (4개 추가)
 
 ### Milestone 7 ✅ (M5와 병합 완료 — 2026-05-11)
@@ -859,16 +861,17 @@ trade-off 정리
 known limitation 정리
 ```
 
-### Milestone 11
+### Milestone 11 ✅ 완료
 
 ```text
-lm-eval-harness 연동
-Qwen3-0.6B FP baseline 측정 (wikitext-2 perplexity / lambada accuracy)
-W8A8 RTN 측정
-W4A16 RTN 측정
-W8A8 SmoothQuant 측정 (Milestone 6-A 완료 시)
-W4A16 GPTQ 측정 (Milestone 6-B 완료 시)
-FP vs RTN vs SmoothQuant vs GPTQ 비교 표 → README 반영
+lm-eval-harness 연동 ✓
+Qwen3-0.6B FP baseline 측정 — 18.16 ✓
+W8A8 static 측정 — 25.01 ✓
+W4A16 RTN 측정 — 25.89 ✓
+W8A8 dynamic 측정 — 18.48 ✓
+W8A8 SmoothQuant 측정 — 23.67 ✓
+W4A16 GPTQ 측정 — 20.96 ✓  (RTN 25.89 대비 -4.93)
+FP vs RTN vs SmoothQuant vs GPTQ 비교 표 → README 반영 ✓
 ```
 
 > 주의: fake quant는 실제 inference path를 통과하므로 perplexity 열화는 측정 가능하다.  

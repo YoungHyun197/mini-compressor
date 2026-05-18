@@ -233,32 +233,24 @@ save_dir/
 
 측정 환경 두 가지를 분리해 표기합니다.
 
-**(A) `python demo.py --ppl` — calibration 5 샘플 (재현 가능한 기본 데모 조건)**
+`python demo.py --ppl` 실행 결과 (wikitext-2 train → GPTQ calibration, wikitext-2 test → PPL 평가):
 
 | Scheme | PPL | Δ vs FP16 |
 |--------|----:|----------:|
 | FP16 (baseline) | 18.16 | — |
 | W4A16 RTN | 25.89 | +7.73 |
+| **W4A16 GPTQ** | **20.96** | **+2.80** |
 | W8A8 static | 25.01 | +6.85 |
 | **W8A8 + SmoothQuant** | **23.67** | **+5.51** |
 | W8A8 dynamic | **18.48** | **+0.32** |
 
-W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 — 같은 calibration 조건에서 **-1.34 개선**. per-tensor static의 본질적 한계 안에서 SmoothQuant이 activation outlier를 weight로 이관해 만든 차이.
+**W4A16**: GPTQ(20.96) vs RTN(25.89) — Hessian 기반 오차 전파로 **-4.93 개선**. 8개 × 512 토큰 calibration.
 
-**(B) `notebooks/milestone11_perplexity.ipynb` — calibration 128 샘플 (대규모 calibration)**
-
-| Scheme | PPL | Δ vs FP16 |
-|--------|----:|----------:|
-| FP16 (baseline) | 18.16 | — |
-| W4A16 RTN | 25.89 | +7.73 |
-| W8A8 static | 27.75 | +9.59 |
-| W8A8 dynamic | 18.48 | +0.32 |
-
-> **흥미로운 관찰**: 128 샘플(B)이 5 샘플(A)보다 W8A8 static PPL이 더 나쁨 (27.75 vs 25.01). MinMax observer가 더 큰 데이터셋에서 outlier에 더 많이 노출돼 per-tensor scale을 과도하게 넓게 잡는 현상 — SmoothQuant 도입 동기를 정확히 보여주는 부수 결과.
-
-측정 방식 공통: sliding window (stride=512, max\_len=2048), wikitext-2 test split.
+**W8A8**: SmoothQuant(23.67) vs static(25.01) — activation outlier 이관으로 **-1.34 개선**. 5 샘플 calibration.
 
 > **W8A8 dynamic이 FP16에 근접한 이유**: 토큰별로 runtime scale을 계산하므로 activation outlier에 영향을 받지 않습니다.
+
+측정 방식: sliding window (stride=512, max\_len=2048), wikitext-2-raw-v1 test split.
 
 ### Round-trip 일치 확인 (Qwen3-0.6B)
 

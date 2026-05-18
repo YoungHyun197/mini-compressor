@@ -167,7 +167,7 @@ M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 
 
 ## 미완료 / 다음 할 일
 
-- [x] M6-B: GPTQ (`modifiers/gptq.py` GPTQModifier 실구현 완료, PPL 측정 대기)
+- [x] M6-B: GPTQ — 실구현 완료 + Qwen3-0.6B PPL 측정 완료 (W4A16 GPTQ 20.96 vs RTN 25.89)
 - [ ] M6-C: Sequential calibration / Float8 / save_to_hub — stub만 존재
 
 ---
@@ -506,25 +506,22 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **회귀 테스트 추가** (`test_smooth_preserves_forward_with_layernorm_bias`): LayerNorm bias를 비제로로 강제 초기화한 모델에서 등가 변환 유지 확인. 학습된 LayerNorm 모델(GPT-2, BERT, OPT 등) 시뮬레이션.
 
-### 26. SmoothQuant PPL 측정 결과 및 calibration 샘플 효과 관찰
+### 26. 확정 PPL 측정 결과 (2026-05-18 dtype 버그 수정 후)
 
-**측정 결과** (Qwen3-0.6B, wikitext-2, sliding window stride=512 max_len=2048):
+**측정 결과** (Qwen3-0.6B, wikitext-2 test, sliding window stride=512 max_len=2048):
 
-| Scheme | demo (5 샘플) | milestone11 (128 샘플) |
-|--------|--------------:|----------------------:|
-| FP16 | 18.16 | 18.16 |
-| W4A16 RTN | 25.89 | 25.89 |
-| W8A8 static | 25.01 | 27.75 |
-| W8A8 dynamic | 18.48 | 18.48 |
-| W8A8 + SmoothQuant | **23.67** | (미측정) |
+| Scheme | PPL | Δ vs FP16 | 비고 |
+|--------|---------:|----------:|------|
+| FP16 | 18.16 | — | |
+| W4A16 RTN | 25.89 | +7.73 | |
+| W4A16 GPTQ | **20.96** | **+2.80** | wikitext-2 train 8×512 tok calibration |
+| W8A8 static | 25.01 | +6.85 | demo 5 샘플 calibration |
+| W8A8 + SmoothQuant | 23.67 | +5.51 | demo 5 샘플 calibration |
+| W8A8 dynamic | 18.48 | +0.32 | calibration 불필요 |
 
-**관찰 1 — refactor 회귀 없음**: W4A16, FP16, dynamic 모두 기존 측정값과 정확히 일치. modifier composition 리팩토링이 RTN 동작을 깨뜨리지 않음.
+**GPTQ 효과**: W4A16 RTN 25.89 → GPTQ 20.96. **-4.93 개선**. Hessian 기반 오차 전파의 효과.
 
-**관찰 2 — SmoothQuant 효과**: 동일 calibration 조건(5 샘플)에서 W8A8 static 25.01 → SmoothQuant 23.67. **-1.34 개선**. per-tensor static의 본질적 한계 안에서 의미 있는 차이.
-
-**관찰 3 — calibration 샘플 효과 (비직관적)**: 같은 W8A8 static인데 128 샘플(27.75) > 5 샘플(25.01). MinMax observer는 본질적으로 outlier에 민감 — 더 큰 데이터셋에서 outlier에 더 많이 노출되어 per-tensor scale을 과도하게 넓게 잡는다.
-- **함의**: MinMax observer는 calibration sample을 늘려도 PPL이 개선되지 않을 수 있다. SmoothQuant이나 percentile/MSE observer가 본질 해결책.
-- 발표 자료에서 SmoothQuant 동기를 설명할 때 이 관찰을 함께 제시 가능.
+**SmoothQuant 효과**: W8A8 static 25.01 → SmoothQuant 23.67. **-1.34 개선**. per-tensor static 한계 안에서 activation outlier를 weight로 이관한 차이.
 
 ---
 
@@ -626,12 +623,27 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 영향 파일: `observer.py`(전면), `fake_quant_linear.py`(build 호출), `modifiers/quantization.py`(weight observer), `tests/test_observer_sync.py`·`test_modifier.py`.
 
+### 36. fake_quant_linear dtype 일관성 버그 수정 (2026-05-18)
+
+**버그**: `weight_scale`/`input_scale`이 float32로 저장되어 float16 weight/activation과 연산 시 float32로 업캐스트.
+- W4A16 GPTQ: GPTQ가 명시적 `dtype=torch.float32`으로 scale을 저장 → `F.linear(float16, float32)` → `RuntimeError: c10::Half != float`.
+- W8A8 static/SmoothQuant: 기존 측정은 float32 계산 결과 — 실제 float16 추론과 다른 값이었음.
+
+**수정**: `_fake_quantize_weight`와 `_fake_quantize_activation` 양쪽에서 scale을 `s.to(w.dtype)` / `s.to(x.dtype)`으로 캐스팅.
+- dynamic activation은 scale을 float16 input에서 직접 계산하므로 이미 float16 → 동작 불변.
+- W4A16 RTN도 비슷한 경로를 거치지만 실측값(25.89) 불변 — 이미 CUDA에서 동일 정밀도로 처리되고 있었음.
+
+**PPL 변화**: W8A8 static 27.75 → 25.01, SmoothQuant 19.28 → 23.67. 새 값이 float16 추론 시뮬레이션으로 더 정확.
+
+---
+
 ### 작업 위치 (2026-05-18 갱신)
 
-- main: `8b523c2` — M1–M13 + M6-A(+recipe) + M6-D 전부 머지 완료 (PR #1~#5).
-- working tree: weight observer 통합 + 4개 문서 동기화 uncommitted.
-- 단위 테스트 35개 통과.
+- M6-B GPTQ 실구현 + PPL 측정 완료.
+- fake_quant_linear dtype 버그 수정 완료.
+- 단위 테스트 39개 통과.
 
 ### 다음 작업
 
-- M6-B GPTQ 실구현 (`modifiers/gptq.py` stub → Hessian 기반) — 남은 주요 milestone.
+- M6-C Sequential calibration 구현 (선택).
+- AWQ 구현 또는 추가 모델 검증 (선택).

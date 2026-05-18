@@ -8,12 +8,12 @@
 
 - [x] `mini_compressor/schemes.py` — QuantizationSpec, QuantizationScheme, SCHEME_REGISTRY
 - [x] `mini_compressor/fake_quant_linear.py` — FakeQuantLinear (flat buffer 방식)
-- [x] `mini_compressor/observer.py` — 4종 observer (weight·activation 공용, granularity-aware) + multi-GPU sync
+- [x] `mini_compressor/observer.py` — 3종 observer (weight·activation 공용, granularity-aware) + multi-GPU sync
 - [x] `mini_compressor/modifiers/` — BaseModifier + 알고리즘별 클래스 (composition pattern)
 - [x] `mini_compressor/recipes.py` — RECIPE_REGISTRY (preset 진입점)
 - [x] `mini_compressor/compressor.py` — Compressor (modifier list 진입점)
 - [x] `mini_compressor/serialize.py` — save_pretrained / load_pretrained
-- [x] `tests/` — 6개 파일, 35개 케이스
+- [x] `tests/` — 6개 파일, 34개 케이스
 - [x] `notebooks/` 디렉토리
 
 ---
@@ -69,7 +69,7 @@ generate 확인
 ### Milestone 5 — W8A8 + W4A16 RTN (observer + calibration + per-group)
 ```
 W8A8 / W4A16 추가
-activation observer 추가 (minmax / percentile / mse / kl_divergence 선택 가능)
+activation observer 추가 (minmax / percentile / mse 선택 가능)
 calibration forward pass
 activation scale 고정
 per-group weight fake quant (W4A16)
@@ -83,7 +83,6 @@ generate 확인
   - [x] `MinMaxObserver` — min/max 수집 + zero 포함 보장 (기본값)
   - [x] `PercentileObserver` — percentile 클리핑 (기본값 99.9th)
   - [x] `MSEObserver` — grid-search로 MSE 최소 scale 탐색
-  - [x] `KLDivergenceObserver` — histogram 기반 KL divergence 최소화
 - [x] `QuantizationSpec`에 `calibration_method: str = "minmax"` 필드 추가
 - [x] `FakeQuantLinear`가 `calibration_method`에 따라 observer 인스턴스화
 - [x] `QuantizationModifier` 구현 (M5+M7 병합)
@@ -317,8 +316,8 @@ rank 0 저장 가드 (serialize.py) — 이미 적용됨
 - [x] rank 0 저장 가드 (`serialize.py:103`) — 이미 구현됨
 - [x] `MinMaxObserver.sync()` — `all_reduce(MIN/MAX)` (min·max는 결합적 → 한 줄로 정확 병합)
 - [x] `PercentileObserver.sync()` — `all_gather_object`로 raw `_data` 전역 공유
-- [x] `MSEObserver.sync()` / `KLDivergenceObserver.sync()` — 동일하게 `all_gather_object`
-      (percentile·grid-search·histogram은 비결합적 → 부분 통계 병합 불가, raw 공유가 정확·수술적)
+- [x] `MSEObserver.sync()` — 동일하게 `all_gather_object`
+      (percentile·grid-search는 비결합적 → 부분 통계 병합 불가, raw 공유가 정확·수술적)
 - [x] `QuantizationModifier.calibrate()`에서 `compute_scale_zp` 직전 `sync()` 호출
 
 #### 13-2. device_map="auto" 호환 ✅ 코드 감사 완료
@@ -332,7 +331,7 @@ rank 0 저장 가드 (serialize.py) — 이미 적용됨
 - [ ] 구현 여부는 진행 상황에 따라 판단
 
 #### 13-4. 검증 코드 ✅ 완료
-- [x] `tests/test_observer_sync.py` — gloo 2-프로세스로 4개 observer sync 실검증
+- [x] `tests/test_observer_sync.py` — gloo 2-프로세스로 3개 observer sync 실검증
       (분산 결과 == 전체 데이터 단일 프로세스 결과)
 - [x] sync() no-op 검증 (분산 init 없이 호출 시 통계 불변)
 - [ ] 2-GPU `device_map="auto"` round-trip — 하드웨어 한계로 미실행
@@ -384,7 +383,7 @@ demo.py 작성
 | AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
 | Sequential calibration | stub 있음 | `calibrate(sequential=True)` — NotImplementedError |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
-| Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
+| Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 3종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
 | HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
 | Multi-model 검증 | **완료** | TinyLlama-1.1B (LLaMA 아키텍처) — 라이브러리 코드 수정 없이 4 recipe 동작 |
 
@@ -395,9 +394,17 @@ demo.py 작성
 - [x] observer를 granularity-aware로 통합 — weight·activation이 동일 추상화 공유 (llm-compressor / AMD Quark 표준 패턴)
 - [x] `BaseObserver(spec)` 생성자에 spec 주입, `_to_units` 헬퍼로 per_tensor/per_channel/per_group 단위 정리
 - [x] `_compute_weight_scale` 삭제 → `QuantizationModifier.initialize()`가 weight observer를 1회 호출
-- [x] weight도 `calibration_method`(minmax / percentile / mse) 선택 가능 — KL은 per_tensor(activation) 전용
+- [x] weight도 `calibration_method`(minmax / percentile / mse) 선택 가능
 - [x] `_scale_zp_from_range` 대칭 분기 교정 (`max(|min|,|max|)/qmax`) — weight minmax는 기존 `absmax/qmax`와 수치 동일
-- [x] 단위 테스트 35개 통과 (weight observer 3개 추가)
+- [x] weight observer 단위 테스트 추가
+
+---
+
+## 2026-05-18 — KL-Divergence observer 제거
+
+- [x] `KLDivergenceObserver` + `"kl_divergence"` 경로 전면 제거 — observer는 minmax / percentile / mse 3종
+- [x] `schemes.py` `calibration_method` 주석, `test_observer_sync.py` `_METHODS`, `test_modifier.py` KL 테스트 정리
+- [x] 단위 테스트 34개 통과
 
 ---
 
@@ -441,13 +448,13 @@ demo.py 작성
 |-----------|------|------|
 | serialization 포맷 설계 (quantization config 등) | **완료** | compressed-tensors 포맷 호환 `quantization_config.json`, `save_pretrained`/`load_pretrained` 구현 |
 | HuggingFace Hub model card upload 가능한 구조 | **부분 완료** | 파일 구조는 HF 호환 (safetensors + config.json). model card(README) 생성 유틸리티 미구현 |
-| Multi-GPU 고려 | **완료** | M13 — observer `sync()` 4종 (all_reduce / all_gather), gloo 2-proc 검증 |
+| Multi-GPU 고려 | **완료** | M13 — observer `sync()` 3종 (all_reduce / all_gather), gloo 2-proc 검증 |
 
 ---
 
 ## Multi-GPU 가산점 요소
 
-> **M13에서 구현 완료** — observer `sync()` 4종 + gloo 2-proc 검증. 아래는 항목별 상태.
+> **M13에서 구현 완료** — observer `sync()` 3종 + gloo 2-proc 검증. 아래는 항목별 상태.
 
 | 고려사항 | 상태 |
 |---------|------|

@@ -9,7 +9,7 @@
 ```
 mini_compressor/
   schemes.py             — QuantizationSpec, QuantizationScheme, W8A8/W4A16/W8A8_DYNAMIC, SCHEME_REGISTRY
-  observer.py            — BaseObserver(+sync 4종 구현), MinMax/Percentile/MSE/KLDivergence observer
+  observer.py            — BaseObserver(+sync 3종 구현), MinMax/Percentile/MSE observer
   fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
   modifiers/             — modifier composition pattern (llm-compressor 정렬)
     base.py              — BaseModifier 추상 인터페이스 (initialize/calibrate/finalize)
@@ -89,7 +89,6 @@ W4A16는 `scheme.activation = None`이므로 calibrate()에서 즉시 return.
 | MinMaxObserver | `"minmax"` | running min/max 누적 |
 | PercentileObserver | `"percentile"` | 전체 데이터 수집 후 percentile clip |
 | MSEObserver | `"mse"` | alpha grid-search로 MSE 최소화 |
-| KLDivergenceObserver | `"kl_divergence"` | histogram 기반 KL divergence 최소화 |
 
 ### 핵심 설계 결정
 
@@ -97,7 +96,7 @@ W4A16는 `scheme.activation = None`이므로 calibrate()에서 즉시 return.
 
 - **MinMaxObserver의 buffer**: `min_val`, `max_val`을 `register_buffer`로 등록. `model.to(device)` 시 자동으로 같은 device로 이동.
 
-- **PercentileObserver / MSEObserver / KLDivergence**: raw data를 CPU list로 수집 (`_data: list[torch.Tensor]`). GPU 메모리 절약 목적. compute 시점에 `torch.cat`으로 합침.
+- **PercentileObserver / MSEObserver**: raw data를 CPU list로 수집 (`_data: list[torch.Tensor]`). GPU 메모리 절약 목적. compute 시점에 `torch.cat`으로 합침.
 
 - **`_scale_zp_from_range()` 공통 메서드**: min/max → scale, zero_point 계산 로직을 BaseObserver 메서드로 분리 (생성 시 받은 spec 사용, 단위별 broadcast). 모든 observer가 공유.
 
@@ -146,10 +145,10 @@ activation: None
 | M12 | demo.py | 완료 |
 | M6-A | modifiers/smoothquant.py (+ modifiers/ 패키지 분리) | 완료 |
 | M6-A 후속 | recipes.py (from_recipe 단일 진입점) | 완료 |
-| M13 | observer.py(sync 4종), tests/test_observer_sync.py | 완료 |
+| M13 | observer.py(sync 3종), tests/test_observer_sync.py | 완료 |
 | M6-D | demo.py(--model), notebooks/milestone6d_llama_validation.ipynb | 완료 |
 
-단위 테스트: 35개 통과 (CI 연동)
+단위 테스트: 34개 통과 (CI 연동)
 
 ---
 
@@ -536,20 +535,20 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 ## 2026-05-17 — M13 Multi-GPU observer sync
 
-### 29. observer sync — MinMax는 all_reduce, 나머지 셋은 all_gather
+### 29. observer sync — MinMax는 all_reduce, 나머지 둘은 all_gather
 
 **문제**: multi-GPU DataParallel calibration에서 각 rank가 자기 배치만 보므로 observer 통계가 rank별로 부분적. `compute_scale_zp` 전에 rank 간 동기화 필요.
 
 **결정**: observer 종류에 따라 두 방식.
 - `MinMaxObserver.sync()` — `all_reduce(min_val, MIN)` / `all_reduce(max_val, MAX)`. min·max는 결합법칙이 성립해 부분 결과를 정확히 병합. 통신량 O(1). road_map 원칙 2("MinMax 통계를 tensor 연산으로 유지")가 노린 결과.
-- `Percentile/MSE/KL.sync()` — `all_gather_object`로 raw `_data`를 전 rank에 공유. 이 셋은 percentile·grid-search·histogram 등 비결합적 계산이라 부분 통계 병합 불가. (a) raw data 공유 vs (b) 알고리즘 재구조화 중, (b)는 동작 코드 3개를 갈아엎음 → (a) 채택. `compute_scale_zp` 무수정 + `sync()`만 추가. 한계: 메모리 rank배 → 대규모는 (b)가 future work.
+- `Percentile/MSE.sync()` — `all_gather_object`로 raw `_data`를 전 rank에 공유. 이 둘은 percentile·grid-search 등 비결합적 계산이라 부분 통계 병합 불가. (a) raw data 공유 vs (b) 알고리즘 재구조화 중, (b)는 동작 코드 2개를 갈아엎음 → (a) 채택. `compute_scale_zp` 무수정 + `sync()`만 추가. 한계: 메모리 rank배 → 대규모는 (b)가 future work.
 - stub docstring의 "MSE: all_reduce(argmin)"은 부정확(rank별 argmin이 달라 병합 안 됨) — all_gather로 바로잡음.
 
 **no-op 보장**: `_dist_active()`(`dist.is_initialized() and world_size>1`)가 아니면 `sync()`는 즉시 return. 단일 GPU 경로(기존 테스트·demo·PPL) 무변경.
 
 **호출 지점**: `QuantizationModifier.calibrate()` — forward 루프 종료 후, `compute_scale_zp` 직전.
 
-**검증**: 2-GPU 하드웨어 없음 → `gloo` 백엔드(CPU 분산)로 `torch.multiprocessing.spawn` 2-프로세스. `tests/test_observer_sync.py`: rank별 다른 데이터 → sync → 결과가 전체 데이터 단일 프로세스 결과와 일치 확인(4개 observer). 검증 불가 영역은 `device_map="auto"` 물리 cross-GPU 배치뿐.
+**검증**: 2-GPU 하드웨어 없음 → `gloo` 백엔드(CPU 분산)로 `torch.multiprocessing.spawn` 2-프로세스. `tests/test_observer_sync.py`: rank별 다른 데이터 → sync → 결과가 전체 데이터 단일 프로세스 결과와 일치 확인(3개 observer). 검증 불가 영역은 `device_map="auto"` 물리 cross-GPU 배치뿐.
 
 ### 30. device_map 감사 — input_scale을 weight.device로 보정
 
@@ -582,19 +581,26 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - `BaseObserver(spec)` — 생성 시 spec을 받아 granularity 인지. `compute_scale_zp()`는 무인자.
 - `_to_units(t, spec)` 헬퍼 — per_tensor/per_channel/per_group을 (단위..., 원소) 형태로 정리해 `amin/amax/quantile(dim=-1)` 한 줄로 처리.
 - `_compute_weight_scale` 함수 삭제 → `QuantizationModifier.initialize()`가 weight observer를 1회 호출.
-- KL은 per_tensor 전용 — per-channel 히스토그램 비용이 비현실적이라 생성 시점에 거부.
 
 **대칭 분기 교정**: `_scale_zp_from_range`의 symmetric scale을 `(max-min)/2qmax` → `max(|min|,|max|)/qmax`로 수정. weight를 observer로 보내면서 드러난 잠재 버그 — 한쪽 꼬리가 길면 그쪽이 잘리던 문제. weight minmax 결과는 기존 `absmax/qmax`와 수치 동일(회귀 없음, 검증 완료).
 
-**검증**: 단위 테스트 35개 통과(기존 32 + weight observer 3). weight minmax가 기존 공식과 per_channel·per_group 모두 `allclose`. outlier 채널에서 percentile/mse가 minmax보다 좁은 scale을 잡음을 확인.
+**검증**: 단위 테스트 통과. weight minmax가 기존 공식과 per_channel·per_group 모두 `allclose`. outlier 채널에서 percentile/mse가 minmax보다 좁은 scale을 잡음을 확인.
 
 영향 파일: `observer.py`(전면), `fake_quant_linear.py`(build 호출), `modifiers/quantization.py`(weight observer), `tests/test_observer_sync.py`·`test_modifier.py`.
+
+## 2026-05-18 — KL-Divergence observer 제거
+
+### 33. KLDivergenceObserver 삭제
+
+**결정**: `KLDivergenceObserver`와 `"kl_divergence"` 경로를 전부 제거. 어떤 scheme도 KL을 기본으로 쓰지 않았고, per_tensor 전용 제약 + histogram 비용 때문에 weight observer 통합 후 활용도가 낮았다. observer는 minmax/percentile/mse 3종으로 정리.
+
+**영향**: `observer.py`(클래스·레지스트리·`_sync_data` 주석), `schemes.py`(`calibration_method` 주석), `tests/test_observer_sync.py`(`_METHODS` 3종), `tests/test_modifier.py`(`test_weight_kl_rejected` 삭제 — KL 거부 경로 자체가 사라짐).
 
 ### 작업 위치 (2026-05-18 갱신)
 
 - main: `8b523c2` — M1–M13 + M6-A(+recipe) + M6-D 전부 머지 완료 (PR #1~#5).
-- working tree: weight observer 통합 + 4개 문서 동기화 uncommitted.
-- 단위 테스트 35개 통과.
+- working tree: weight observer 통합 + KL 제거 + 문서 동기화 uncommitted.
+- 단위 테스트 34개 통과.
 
 ### 다음 작업
 

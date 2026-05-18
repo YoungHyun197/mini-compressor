@@ -16,7 +16,7 @@ from mini_compressor.schemes import W8A8
 
 _WORLD = 2
 _ACT_SPEC = W8A8.activation  # int8, per_tensor, asymmetric
-_METHODS = ["minmax", "percentile", "mse", "kl_divergence"]
+_METHODS = ["minmax", "percentile", "mse"]
 
 
 def _spec(method: str):
@@ -42,7 +42,7 @@ def _rank_data(rank: int) -> torch.Tensor:
 
 
 def _run_observer_sync(rank: int, port: int) -> None:
-    """spawn된 각 프로세스: 4개 observer의 분산 sync 결과가 단일 프로세스 전역 결과와 일치하는지 검증."""
+    """spawn된 각 프로세스: 3개 observer의 분산 sync 결과가 단일 프로세스 전역 결과와 일치하는지 검증."""
     dist.init_process_group(
         backend="gloo", rank=rank, world_size=_WORLD,
         init_method=f"tcp://127.0.0.1:{port}",
@@ -73,7 +73,7 @@ def _run_observer_sync(rank: int, port: int) -> None:
 
 
 def test_observer_sync_matches_single_process():
-    """gloo 2-프로세스 sync 결과가 전체 데이터 단일 프로세스 결과와 일치해야 한다 (4개 observer)."""
+    """gloo 2-프로세스 sync 결과가 전체 데이터 단일 프로세스 결과와 일치해야 한다 (3개 observer)."""
     if not dist.is_available():
         pytest.skip("torch.distributed 미지원 빌드")
     mp.spawn(_run_observer_sync, args=(_find_free_port(),), nprocs=_WORLD, join=True)

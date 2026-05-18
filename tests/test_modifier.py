@@ -3,7 +3,6 @@ import dataclasses
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-import pytest
 import torch
 import torch.nn as nn
 
@@ -141,15 +140,6 @@ def test_weight_observer_per_group():
     assert model[0].weight_scale.shape == (64, 1)
 
 
-def test_weight_kl_rejected():
-    """weight에 kl_divergence는 명시적으로 거부된다 (per-channel histogram 비현실적)."""
-    model = nn.Sequential(nn.Linear(128, 64))
-    spec = dataclasses.replace(W8A8.weight, calibration_method="kl_divergence")
-    scheme = dataclasses.replace(W8A8, weight=spec)
-    with pytest.raises(NotImplementedError):
-        QuantizationModifier(scheme).initialize(model)
-
-
 if __name__ == "__main__":
     test_initialize_replaces_linear()
     test_initialize_ignores_module()
@@ -159,5 +149,4 @@ if __name__ == "__main__":
     test_finalize_removes_observer()
     test_weight_observer_method_selectable()
     test_weight_observer_per_group()
-    test_weight_kl_rejected()
     print("\n모든 테스트 통과")

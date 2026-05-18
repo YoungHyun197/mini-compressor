@@ -451,7 +451,6 @@ scheme.activation is None 여부로 분기
 | `minmax` (기본) | running min/max | MinMax + zero 포함 보장 | `all_reduce(MIN/MAX)` |
 | `percentile` | 전체 activation 수집 | 지정 percentile 클리핑 후 MinMax | `all_gather` → percentile |
 | `mse` | grid-search | MSE 최소 scale 탐색 | 로컬 탐색 후 `all_reduce(argmin)` |
-| `kl_divergence` | histogram bins | KL divergence 최소 clip range 탐색 | `all_reduce(SUM)` on bins |
 
 **설계 결정:**
 - `BaseObserver` 공통 인터페이스 (`update()` / `compute_scale_zp()`) — 생성 시 spec을 받아 granularity 인지
@@ -459,7 +458,7 @@ scheme.activation is None 여부로 분기
 - weight·activation이 동일 observer 공유 — activation observer는 `FakeQuantLinear`가, weight observer는 `QuantizationModifier.initialize()`가 `calibration_method`에 따라 인스턴스화
 - `finalize()`에서 `module.input_observer = None` → state_dict 오염 방지
 - percentile/kl은 메모리 heavy, mse는 grid-search 비용 → POC 기본값은 minmax
-- weight(per_channel·per_group)는 minmax/percentile/mse 지원, kl_divergence는 채널별 히스토그램 비용 때문에 per_tensor(activation) 전용
+- weight(per_channel·per_group)와 activation(per_tensor) 모두 minmax/percentile/mse 지원 — granularity만 다름
 
 ### finalize()
 
@@ -1218,7 +1217,7 @@ def calibrate(self, model, dataloader, sequential=False):
 
 ### 13-3. Multi-GPU 지원 (가산점 요소)
 
-**현재 상태: Milestone 13 완료 — observer `sync()` 4종 구현(MinMax는 all_reduce, Percentile/MSE/KL은 all_gather) + gloo 2-프로세스 검증. Tensor Parallelism과 실 2-GPU `device_map="auto"` 실측은 범위 외 / 하드웨어 한계.**
+**현재 상태: Milestone 13 완료 — observer `sync()` 3종 구현(MinMax는 all_reduce, Percentile/MSE는 all_gather) + gloo 2-프로세스 검증. Tensor Parallelism과 실 2-GPU `device_map="auto"` 실측은 범위 외 / 하드웨어 한계.**
 
 **고려해야 할 사항:**
 

@@ -1,4 +1,5 @@
 # Multi-GPU observer sync 검증 — gloo 백엔드 2-프로세스로 all_reduce/all_gather 실검증
+import dataclasses
 import os
 import socket
 import sys
@@ -16,6 +17,11 @@ from mini_compressor.schemes import W8A8
 _WORLD = 2
 _ACT_SPEC = W8A8.activation  # int8, per_tensor, asymmetric
 _METHODS = ["minmax", "percentile", "mse", "kl_divergence"]
+
+
+def _spec(method: str):
+    """per_tensor activation spec에 calibration_method만 바꿔 끼운다."""
+    return dataclasses.replace(_ACT_SPEC, calibration_method=method)
 
 
 def _find_free_port() -> int:
@@ -43,17 +49,18 @@ def _run_observer_sync(rank: int, port: int) -> None:
     )
     try:
         for method in _METHODS:
+            spec = _spec(method)
             # 분산 경로 — 각 rank는 자기 데이터만 update 후 sync
-            obs = build_observer(method)
+            obs = build_observer(spec)
             obs.update(_rank_data(rank))
             obs.sync()
-            scale, zp = obs.compute_scale_zp(_ACT_SPEC)
+            scale, zp = obs.compute_scale_zp()
 
             # 기준 경로 — 전체 rank 데이터를 단일 observer로
-            ref = build_observer(method)
+            ref = build_observer(spec)
             for r in range(_WORLD):
                 ref.update(_rank_data(r))
-            ref_scale, ref_zp = ref.compute_scale_zp(_ACT_SPEC)
+            ref_scale, ref_zp = ref.compute_scale_zp()
 
             assert torch.allclose(scale, ref_scale, atol=1e-5), (
                 f"{method} rank{rank}: scale {scale} != ref {ref_scale}"
@@ -74,7 +81,7 @@ def test_observer_sync_matches_single_process():
 
 def test_sync_noop_without_distributed():
     """분산 init 없이 sync() 호출 시 통계가 그대로 유지돼야 한다 (단일 GPU no-op)."""
-    obs = build_observer("minmax")
+    obs = build_observer(_ACT_SPEC)  # calibration_method 기본값 minmax
     obs.update(torch.tensor([-2.0, 3.0]))
     obs.sync()
     assert obs.min_val.item() == -2.0

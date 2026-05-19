@@ -420,7 +420,8 @@ save()         — save_pretrained + quantization_config.json (HF 호환)
 > **알고리즘별 변경 범위 요약** (modifier composition 리팩토링 이후 — 6-A에서 완료):  
 > SmoothQuant → `modifiers/smoothquant.py` 새 파일 추가. 나머지 파일 변경 없음.  
 > GPTQ → `modifiers/gptq.py` 새 파일 추가. 나머지 파일 변경 없음.  
-> 두 기법 모두 `FakeQuantLinear.forward()`, `schemes.py`, `serialize.py`는 건드리지 않는다.
+> AWQ → `modifiers/awq.py` 실구현 + `_pair_utils.py` 공통 유틸 분리. `fake_quant_linear.py`, `schemes.py`, `serialize.py` 변경 없음.  
+> 세 기법 모두 `FakeQuantLinear.forward()`, `schemes.py`, `serialize.py`는 건드리지 않는다.
 
 ### load
 
@@ -812,8 +813,9 @@ SmoothQuantModifier 실구현:
 
 > **설계 검증 효과**: 새 알고리즘 추가가 `modifiers/<algo>.py` 한 파일 추가로 끝난다는 점이 SmoothQuant 구현으로 입증됐다. road_map 17.3 / 19 답변 강도 상승.
 
-### Milestone 6-B — GPTQ ✅ 완료 (2026-05-18)
+### Milestone 6-B — GPTQ + AWQ ✅ 완료 (2026-05-18/19)
 
+**GPTQ** (2026-05-18):
 ```text
 modifiers/gptq.py GPTQModifier 실구현 (stub → 실구현)
 QuantizationMixin 분리 (llm-compressor QuantizationMixin 패턴)
@@ -826,10 +828,25 @@ Qwen3-0.6B wikitext-2 PPL 측정 — GPTQ 20.96 vs RTN 25.89 (-4.93)
 fake_quant_linear dtype 버그 수정 (scale float16 캐스팅 일관화)
 ```
 
-변경 파일: `modifiers/gptq.py`, `modifiers/quantization.py`, `modifiers/__init__.py`,
-`compressor.py`, `recipes.py`, `tests/test_gptq.py`, `fake_quant_linear.py`, `demo.py`  
+**AWQ** (2026-05-19):
+```text
+modifiers/_pair_utils.py 신규 — SmoothQuant/AWQ 공통 pair 탐색 유틸
+modifiers/awq.py AWQModifier 실구현 (stub → 실구현)
+  - channel-wise activation mean 수집 (SmoothQuant의 max 대신 mean)
+  - grid search alpha ∈ (0,1]: s = (s_x / mean(s_x))^alpha
+  - INT4 per-group fake quant error 최소화
+  - best_s → norm.weight /= s, linear.weight *= s (등가 변환)
+w4a16_awq recipe 추가
+unit test 7개: preserves_forward_output, layernorm_bias, initialize_required, empty_dataloader,
+               no_pairs_model, compressor_chain, int4_fake_quant_roundtrip
+```
+
+변경 파일: `modifiers/_pair_utils.py` (신규), `modifiers/gptq.py`, `modifiers/awq.py`,
+`modifiers/quantization.py`, `modifiers/smoothquant.py` (import 갱신),
+`modifiers/__init__.py`, `compressor.py`, `recipes.py`,
+`tests/test_gptq.py`, `tests/test_awq.py` (신규), `fake_quant_linear.py`, `demo.py`  
 변경 없음: `schemes.py`, `serialize.py`  
-테스트: 39개 통과 (4개 추가)
+테스트: 49개 통과 (7개 추가)
 
 ### Milestone 7 ✅ (M5와 병합 완료 — 2026-05-11)
 

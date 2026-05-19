@@ -2,7 +2,7 @@
 
 PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingFace 모델의 W4A16(INT4), W8A8(INT8) 양자화를 one-click API로 수행하고, compressed-tensors 포맷으로 저장·복원합니다.
 
-> **현재 개발 진행 중입니다.** W4A16 RTN, W8A8 static/dynamic, **W8A8 + SmoothQuant**, **W4A16 GPTQ**가 구현되어 있으며, AWQ 등 추가 알고리즘은 구현 예정입니다.
+> W4A16 RTN/GPTQ/AWQ, W8A8 static/dynamic/SmoothQuant가 구현되어 있습니다.
 
 ---
 
@@ -26,9 +26,10 @@ mini_compressor/
 ├── modifiers/             — 알고리즘별 Modifier 클래스 (composition pattern)
 │   ├── base.py            — BaseModifier 추상 인터페이스 (initialize / calibrate / finalize)
 │   ├── quantization.py    — QuantizationMixin + QuantizationModifier (RTN — W4A16 / W8A8 static / dynamic)
+│   ├── _pair_utils.py     — norm → linear 페어 탐색 유틸 (SmoothQuant/AWQ 공유)
 │   ├── smoothquant.py     — SmoothQuantModifier (activation 분포 평탄화)
 │   ├── gptq.py            — GPTQModifier (Hessian 기반 W4A16 weight 최적화)
-│   └── awq.py             — AWQModifier (stub)
+│   └── awq.py             — AWQModifier (activation magnitude grid-search W4A16)
 ├── compressor.py          — modifier list를 받아 lifecycle을 순차 실행하는 진입점
 └── serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
 
@@ -153,6 +154,7 @@ model = load_pretrained("./qwen3-w8a8")
 |--------|------|-------------|
 | `w4a16` | W4A16 RTN | INT4 weight-only, per-group(128), symmetric |
 | `w4a16_gptq` | W4A16 GPTQ | INT4 weight-only, per-group(128), Hessian 기반 오차 전파 |
+| `w4a16_awq` | AWQ → W4A16 RTN | INT4 weight-only + activation magnitude grid-search scaling |
 | `w8a8` | W8A8 RTN | INT8 W/A — weight per-channel, activation per-tensor MinMax static |
 | `w8a8_dynamic` | W8A8 dynamic RTN | INT8 W/A — activation per-token 런타임 scale |
 | `w8a8_smoothquant` | SmoothQuant(α=0.5) → W8A8 RTN | W8A8 + activation outlier를 weight로 흡수 |
@@ -311,6 +313,7 @@ pytest tests/ -v
 | `test_modifier.py` | QuantizationModifier initialize / calibrate / finalize, scale shape |
 | `test_smoothquant.py` | SmoothQuant pair 탐색, 등가 변환 수치 검증, Compressor chain 통합 |
 | `test_gptq.py` | GPTQModifier lifecycle, scale shape, weight on-grid, RTN 대비 MSE |
+| `test_awq.py` | AWQModifier 등가 변환, LayerNorm bias, interface 계약, Compressor chain |
 | `test_serialize.py` | scheme ↔ dict 변환 round-trip, 파일 생성 확인 |
 | `test_compressor.py` | Compressor API, from\_recipe, compress, save |
 | `test_observer_sync.py` | gloo 2-프로세스 observer sync 검증 (all\_reduce / all\_gather) |
@@ -327,18 +330,18 @@ pytest tests/ -v
 - [x] Compressor one-click API + modifier composition (BaseModifier + per-algorithm class)
 - [x] **SmoothQuant** (`SmoothQuantModifier`) — activation 분포 평탄화로 W8A8 정확도 향상
 - [x] **GPTQ** (`GPTQModifier`) — Hessian 기반 W4A16 weight 최적화, `from_recipe("w4a16_gptq")`
+- [x] **AWQ** (`AWQModifier`) — activation magnitude grid-search per-channel scaling, `from_recipe("w4a16_awq")`
 - [x] Recipe preset (`Compressor.from_recipe`) — modifier chain을 이름 한 줄로 노출
 - [x] End-to-End 데모 (`demo.py`) — 네 scheme (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant) compress → generate → save → load 전체 흐름
 - [x] **Multi-GPU observer sync** (`BaseObserver.sync()`) — all_reduce / all_gather rank 동기화, gloo 2-proc 검증
 - [x] **멀티모델 검증** — TinyLlama-1.1B (LLaMA 아키텍처)에서 라이브러리 코드 수정 없이 동작 확인
 - [x] **Sequential calibration** (`QuantizationModifier.calibrate(sequential=True)`) — layer별 GPU offload로 peak 메모리 O(single_layer) 절감
-- [x] 단위 테스트 42개, CI 통과
+- [x] 단위 테스트 49개, CI 통과
 
 ### 진행 중
 
 아래 기능은 인터페이스(stub)만 정의되어 있으며 호출 시 `NotImplementedError`를 발생시킵니다. 각 stub에는 입출력 타입, docstring, 의도된 동작이 명세되어 있습니다.
 
-- [ ] **AWQ** (`AWQModifier`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
 - [ ] **실 2-GPU 실측** — observer sync는 구현·검증 완료(gloo 2-proc). `device_map="auto"` 물리 cross-GPU 배치와 Tensor Parallelism은 하드웨어 한계로 미실측
 - [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push

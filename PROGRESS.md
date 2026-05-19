@@ -13,7 +13,7 @@
 - [x] `mini_compressor/recipes.py` — RECIPE_REGISTRY (preset 진입점)
 - [x] `mini_compressor/compressor.py` — Compressor (modifier list 진입점)
 - [x] `mini_compressor/serialize.py` — save_pretrained / load_pretrained
-- [x] `tests/` — 8개 파일, 42개 케이스
+- [x] `tests/` — 9개 파일, 49개 케이스
 - [x] `notebooks/` 디렉토리
 
 ---
@@ -142,15 +142,17 @@ composition 패턴 위에 Quark식 선언적 preset 레이어 추가
 
 ---
 
-### Milestone 6-B — GPTQ ✅ 완료
+### Milestone 6-B — GPTQ + AWQ ✅ 완료
 ```
 modifiers/gptq.py GPTQModifier 실구현
-layer별 Hessian + column-wise weight 최적화
-W4A16 + GPTQ unit test (4개) 통과
-RTN W4A16 대비 output MSE 검증
+modifiers/awq.py AWQModifier 실구현 (activation magnitude grid-search)
+layer별 Hessian + column-wise weight 최적화 (GPTQ)
+activation mean 기반 per-channel scale + grid search alpha (AWQ)
+unit test 7개 (AWQ) + 4개 (GPTQ) 통과
 ```
-변경 파일: `modifiers/gptq.py` (stub → 실구현), `modifiers/quantization.py` (QuantizationMixin 분리),
-`modifiers/__init__.py`, `compressor.py`, `recipes.py`
+변경 파일: `modifiers/_pair_utils.py` (신규), `modifiers/gptq.py` (stub → 실구현),
+`modifiers/awq.py` (stub → 실구현), `modifiers/smoothquant.py` (pair_utils 분리),
+`modifiers/quantization.py` (QuantizationMixin 분리), `modifiers/__init__.py`, `compressor.py`, `recipes.py`
 
 - [x] `QuantizationMixin` 추출 (`modifiers/quantization.py`) — llm-compressor 패턴
   - `initialize` / `_should_replace` / `finalize` 공통 mixin으로 분리
@@ -165,6 +167,18 @@ RTN W4A16 대비 output MSE 검증
 - [x] `tests/test_gptq.py` 4개 테스트 통과
   - replaces_linear, scale_shape, weight_on_grid, mse_leq_rtn
 - [x] W4A16 GPTQ Qwen3-0.6B wikitext-2 perplexity 측정 — 20.96 (RTN 25.89 대비 -4.93)
+
+**AWQ 추가 구현**:
+- [x] `modifiers/_pair_utils.py` 신규 — `_find_smooth_pairs`, `_collect_linears`, `_has_affine_weight` 공통 유틸 (SQ+AWQ 공유)
+- [x] `modifiers/smoothquant.py` 수정 — `_pair_utils` import로 교체
+- [x] `AWQModifier` 실구현 (`modifiers/awq.py`)
+  - forward pre-hook으로 channel-wise activation mean 누적 (`s_x = mean(|X|)`)
+  - grid search: alpha ∈ linspace(0,1,n_grid+1)[1:] → `s = (s_x / mean(s_x))^alpha`
+  - INT4 per-group fake quant (`_int4_fake_quant`) + activation-weighted error 최소화 (`_quant_error`)
+  - best_s로 `norm.weight /= s`, `linear.weight *= s` 적용
+- [x] `w4a16_awq` recipe 추가 (`recipes.py`)
+- [x] `tests/test_awq.py` 7개 테스트 통과
+  - preserves_forward_output, preserves_forward_with_layernorm_bias, initialize_required, empty_dataloader, no_pairs_model, compressor_chain, int4_fake_quant_roundtrip
 
 ---
 
@@ -390,7 +404,7 @@ demo.py 작성
 | **SmoothQuant** | **구현 완료** | `SmoothQuantModifier` — `Compressor.from_recipe("w8a8_smoothquant")` 또는 modifier list 직접 구성. activation 분포 평탄화 |
 | real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
 | GPTQ | **구현 완료** | `GPTQModifier` — Hessian 기반 W4A16 weight 최적화. `Compressor.from_recipe("w4a16_gptq")` |
-| AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
+| AWQ | **구현 완료** | `AWQModifier` — activation magnitude grid-search W4A16, `from_recipe("w4a16_awq")` |
 | Sequential calibration | **구현 완료** | `calibrate(sequential=True)` — layer별 GPU offload, model.model.layers 구조 지원 |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
 | Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
@@ -440,12 +454,11 @@ demo.py 작성
 
 ## 현재 작업 위치
 
-> **Milestone 1–13 + M6-C + M6-D 완료** (SmoothQuant + Recipe preset + GPTQ + Sequential Calibration + Multi-GPU observer sync + 멀티모델 검증)
+> **Milestone 1–13 + M6-B(GPTQ+AWQ) + M6-C + M6-D 완료**
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
 
 **다음 할 일.**
-1. AWQ 구현 (선택)
-2. Float8 / save_to_hub stub → 실구현 (선택)
+1. Float8 / save_to_hub stub → 실구현 (선택)
 
 ---
 

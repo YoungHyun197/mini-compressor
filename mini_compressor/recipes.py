@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, Dict, List, Optional
 
-from .modifiers import BaseModifier, GPTQModifier, QuantizationModifier, SmoothQuantModifier
+from .modifiers import AWQModifier, BaseModifier, GPTQModifier, QuantizationModifier, SmoothQuantModifier
 from .schemes import W8A8, W4A16, W8A8_DYNAMIC, QuantizationScheme
 
 # recipe factory: (targets, ignore) → modifier 리스트.
@@ -41,12 +41,23 @@ def _w8a8_smoothquant(
     ]
 
 
+def _w4a16_awq(
+    targets: Optional[List[str]], ignore: Optional[List[str]]
+) -> List[BaseModifier]:
+    """AWQ → W4A16 RTN. activation magnitude 기반 grid-search scaling 후 INT4 RTN 적용한다."""
+    return [
+        AWQModifier(n_grid=20, group_size=128),
+        QuantizationModifier(W4A16, targets=targets, ignore=ignore),
+    ]
+
+
 # 이름 → recipe factory. Compressor.from_recipe()의 유일한 preset 진입점.
 # 단일 RTN scheme은 modifier 1개짜리 recipe로, SmoothQuant 같은 알고리즘은 여러
 # modifier가 chain된 recipe로 — 모든 preset을 하나의 레지스트리로 표현한다.
 RECIPE_REGISTRY: Dict[str, RecipeFactory] = {
     "w4a16": _rtn(W4A16),
     "w4a16_gptq": _w4a16_gptq,
+    "w4a16_awq": _w4a16_awq,
     "w8a8": _rtn(W8A8),
     "w8a8_dynamic": _rtn(W8A8_DYNAMIC),
     "w8a8_smoothquant": _w8a8_smoothquant,

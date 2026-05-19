@@ -12,11 +12,12 @@ mini_compressor/
   observer.py            — BaseObserver(+sync 4종 구현), MinMax/Percentile/MSE/KLDivergence observer
   fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
   modifiers/             — modifier composition pattern (llm-compressor 정렬)
+    _pair_utils.py       — _find_smooth_pairs / _collect_linears / _has_affine_weight (SQ+AWQ 공유 유틸)
     base.py              — BaseModifier 추상 인터페이스 (initialize/calibrate/finalize)
     quantization.py      — QuantizationMixin (module replacement 공통 mixin) + QuantizationModifier (RTN)
     smoothquant.py       — SmoothQuantModifier (실구현)
     gptq.py              — GPTQModifier (실구현 — Hessian 기반 W4A16 weight 최적화)
-    awq.py               — AWQModifier (stub)
+    awq.py               — AWQModifier (실구현 — activation magnitude grid-search W4A16)
   recipes.py             — RECIPE_REGISTRY (preset 이름 → modifier 파이프라인 factory)
   compressor.py          — Compressor (modifier list 수용, from_recipe/compress/save, save_to_hub stub)
   serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
@@ -701,12 +702,78 @@ layer별 원래 device는 `layer_devices`에 기록해 복귀. scale buffer도 `
 
 ---
 
+## 2026-05-19 — M6-B AWQ 실구현
+
+### 42. _pair_utils.py — SmoothQuant/AWQ 공통 유틸 분리
+
+**문제**: `smoothquant.py` 하단에 있던 `_find_smooth_pairs`, `_collect_linears`, `_has_affine_weight` 세 함수가 AWQ에서도 동일하게 필요. 파일 간 복사는 단일 진실 출처 원칙 위반.
+
+**결정**: `modifiers/_pair_utils.py`로 분리. `smoothquant.py`와 `awq.py` 모두 `from ._pair_utils import ...`로 가져옴.
+
+**근거**: "새 알고리즘 = 새 파일 추가만"이라는 설계 주장에 부합. pair 탐색 로직이 변경될 때 한 곳만 수정하면 됨. `smoothquant.py`의 외부 테스트 import(`from mini_compressor.modifiers.smoothquant import _find_smooth_pairs`)는 re-export 없이도 `_pair_utils`에서 직접 import 가능하도록 유지.
+
+### 43. AWQ 알고리즘 상세 — SmoothQuant와의 비교
+
+**수정된 파일 목록 (AWQ 구현)**:
+| 파일 | 변경 종류 | 내용 |
+|------|---------|------|
+| `modifiers/_pair_utils.py` | **신규** | norm→linear 페어 탐색 공통 유틸 (SQ에서 이관) |
+| `modifiers/smoothquant.py` | **수정** | 하단 3개 함수 → `_pair_utils` import로 교체 |
+| `modifiers/awq.py` | **구현** | AWQModifier + `_int4_fake_quant` + `_quant_error` 헬퍼 |
+| `recipes.py` | **수정** | `_w4a16_awq` factory + `"w4a16_awq"` 레지스트리 항목 추가 |
+| `tests/test_awq.py` | **신규** | 7개 단위 테스트 |
+| `fake_quant_linear.py`, `schemes.py`, `serialize.py` | **무변경** | 설계 주장("새 알고리즘 = 새 파일") 입증 |
+
+**SmoothQuant vs AWQ 비교**:
+
+| 항목 | SmoothQuant | AWQ |
+|------|------------|-----|
+| 주 용도 | W8A8 activation outlier 완화 | W4A16 salient channel 보호 |
+| Scale 수식 | `x_max^α / w_max^(1-α)`, α=0.5 고정 | `(s_x / mean(s_x))^α`, α는 grid search |
+| Activation 통계 | channel-wise abs **max** | channel-wise abs **mean** |
+| Weight 분포 반영 | O (w_max 사용) | X (quant error로만 평가) |
+| Error 평가 | 없음 (수식 기반 고정) | INT4 fake quant error 직접 최소화 |
+| Calibration 비용 | O(n_pairs) | O(n_pairs × n_grid × n_linears) |
+| 구현 핵심 | hook + 1회 transform | hook + grid search loop |
+
+**AWQ 알고리즘 상세**:
+1. `initialize`: `_find_smooth_pairs`로 norm→linear 페어 탐색. 첫 linear에 `register_forward_pre_hook` 등록 — `x_sum`, `x_count` 누적.
+2. `calibrate`: forward pass로 `s_x = mean(|X|)` 수집. 페어마다 grid search:
+   - alpha ∈ linspace(0, 1, n_grid+1)[1:] (0 제외 — trivial no-op)
+   - `s = (s_x / mean(s_x)).pow(alpha)` (정규화로 전체 scale magnitude 보존)
+   - `err = Σ_lin ||Q_INT4(W*s)/s - W||² ⊙ s_x` (activation magnitude 가중 오차)
+   - best_s = argmin err
+3. `finalize`: hook 해제 + buffer 정리.
+
+**INT4 fake quant (`_int4_fake_quant`)**:
+- per-group symmetric, group_size=128 (기본값)
+- `cols % group_size != 0` 시 `group_size = cols` fallback (per-channel으로 강등)
+- qmax=7 (INT4 symmetric range [-7, 7])
+
+**설계철학 부합**:
+- **modifier composition**: `Compressor([AWQModifier(), QuantizationModifier(W4A16)])` — 기존 API 무변경, 새 파일만 추가.
+- **BaseModifier lifecycle**: initialize/calibrate/finalize 계약 동일. `try/finally`로 hook 안전 해제 이미 보장.
+- **try/finally 안전성**: `Compressor.compress()`의 try/finally가 AWQ hook도 보호. OOM 발생해도 hook 잔류 없음 (M6 구현 후 이미 적용된 safeguard가 AWQ에도 자동 적용).
+- **recipe preset**: `"w4a16_awq"` 한 줄로 진입. `Compressor.from_recipe("w4a16_awq")`.
+
+**장점**:
+- calibration data만 필요 (추가 training 불필요)
+- grid search가 최적 scale을 직접 찾음 → RTN W4A16보다 PPL 개선 기대 (AWQ 논문: LLAMA-7B 기준 W4A16 RTN 6.09 → AWQ 5.52 on wiki-text2)
+- mean 기반 통계 → max(outlier에 민감)보다 robust
+
+**단점**:
+- grid search로 calibration 시간 n_grid배 증가 (n_grid=20 기본)
+- W4A16 특화 — W8A8에서는 SmoothQuant가 더 자연스러운 선택
+- `cols % group_size != 0` 모델에서는 fallback으로 group_size 달라짐
+
+---
+
 ### 작업 위치 (2026-05-19 갱신)
 
 - M6-C Sequential Calibration 구현 완료.
-- 단위 테스트 42개 통과.
+- M6-B AWQ 구현 완료.
+- 단위 테스트 49개 통과.
 
 ### 다음 작업
 
-- AWQ 구현 (선택).
 - Float8 / save_to_hub stub → 실구현 (선택).

@@ -405,9 +405,10 @@ initialize()   — nn.Linear → FakeQuantLinear 교체 + weight observer로 wei
 calibrate()    — [RTN] activation observer forward, calibration_method별 scale 계산
                — [GPTQ] Hessian 기반 layer-wise weight 최적화 (RTN scale 계산 대체)
                — scheme.activation is None 분기 (W4A16은 activation skip)
-               — [sequential 모드] layer 하나씩 GPU 올려 calibrate → CPU offload
-                   대형 모델에서 전체 forward 불가 시 사용
-                   modifier.py calibrate(sequential=True) 플래그로 분기
+               — [sequential 모드 ✅] layer 하나씩 GPU 올려 calibrate → CPU offload
+                   model.model.layers 구조 감지 → layers[0].forward 임시 대체로
+                   embedding 출력 캡처 → layer별 forward → scale 확정 → CPU 반환
+                   calibrate(sequential=True) 플래그로 진입
   ↓
 finalize()     — observer 제거, scale buffer만 남김 (깔끔한 state_dict)
   ↓

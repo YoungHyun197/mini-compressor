@@ -13,7 +13,7 @@
 - [x] `mini_compressor/recipes.py` — RECIPE_REGISTRY (preset 진입점)
 - [x] `mini_compressor/compressor.py` — Compressor (modifier list 진입점)
 - [x] `mini_compressor/serialize.py` — save_pretrained / load_pretrained
-- [x] `tests/` — 7개 파일, 39개 케이스
+- [x] `tests/` — 8개 파일, 42개 케이스
 - [x] `notebooks/` 디렉토리
 
 ---
@@ -168,20 +168,21 @@ RTN W4A16 대비 output MSE 검증
 
 ---
 
-### Milestone 6-C — Sequential Calibration (시간 허락 시)
+### Milestone 6-C — Sequential Calibration ✅ 완료
 ```
 QuantizationModifier.calibrate()에 sequential=True 모드 추가
 layer 단위 GPU offload calibration
 대형 모델에서 전체 forward 불가 시 사용
 ```
-변경 파일: `modifiers/quantization.py` 만
+변경 파일: `modifiers/quantization.py`, `tests/test_sequential_calib.py` (신규)
 
 - [x] `calibrate(sequential=False)` 기본 인터페이스 확정 (파라미터 추가 + stub)
-- [ ] `_calibrate_sequential()` 구현
-  - [ ] embedding 출력까지 CPU 캐시 수집
-  - [ ] layer별 GPU 이동 → calibration → CPU offload 루프
-  - [ ] 각 layer의 scale buffer 채우기
-- [ ] Qwen3-0.6B에서 sequential 모드 동작 확인
+- [x] `_calibrate_sequential()` 구현
+  - [x] layers[0].forward 임시 대체로 embedding 출력(hidden_states + kwargs) CPU 캐시 수집
+  - [x] layer별 compute_device 이동 → forward (observer 수집) → scale 확정 → CPU offload 루프
+  - [x] 각 layer의 scale buffer 채우기 + input_observer 즉시 해제
+- [x] 단위 테스트 3개 통과 (scale 동등성 · 미지원 구조 에러 · 빈 dataloader 에러)
+- [x] Qwen3-0.6B 구조 지원 확인 (model.model.layers 패턴 — 아키텍처 비종속)
 
 ---
 
@@ -390,7 +391,7 @@ demo.py 작성
 | real INT 패킹 (`quantization_status: "compressed"`) | 미지원 | 현재는 fake quant 단계 — weight는 float16 저장. 실제 INT4/INT8 패킹은 컴파일러 단 담당 |
 | GPTQ | **구현 완료** | `GPTQModifier` — Hessian 기반 W4A16 weight 최적화. `Compressor.from_recipe("w4a16_gptq")` |
 | AWQ | stub 있음 | `AWQModifier` — NotImplementedError |
-| Sequential calibration | stub 있음 | `calibrate(sequential=True)` — NotImplementedError |
+| Sequential calibration | **구현 완료** | `calibrate(sequential=True)` — layer별 GPU offload, model.model.layers 구조 지원 |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
 | Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
 | HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
@@ -439,13 +440,12 @@ demo.py 작성
 
 ## 현재 작업 위치
 
-> **Milestone 1–13 + M6-D 완료** (SmoothQuant + Recipe preset + M13 Multi-GPU observer sync + M6-D 멀티모델 검증)
+> **Milestone 1–13 + M6-C + M6-D 완료** (SmoothQuant + Recipe preset + GPTQ + Sequential Calibration + Multi-GPU observer sync + 멀티모델 검증)
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
-> 2026-05-19: 코드 품질 개선 (hook 잔류 버그 수정, assert → RuntimeError, 주석 보완).
 
 **다음 할 일.**
-1. Milestone 6-C Sequential Calibration 구현 (메모리 효율 calibration)
-2. AWQ 구현 (선택)
+1. AWQ 구현 (선택)
+2. Float8 / save_to_hub stub → 실구현 (선택)
 
 ---
 

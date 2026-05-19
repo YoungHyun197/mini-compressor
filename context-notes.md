@@ -675,14 +675,38 @@ modifier list에 복수의 QuantizationMixin이 있으면 리스트 순서상 �
 
 ---
 
+## 2026-05-19 — M6-C Sequential Calibration
+
+### 41. _calibrate_sequential — layers[0].forward 임시 대체로 embedding 출력 캡처
+
+**설계**: `model.model.layers[0].forward`를 임시 대체 함수로 교체. 각 배치를 forward할 때
+embedding + pre-processing(causal_mask, position_ids 등)이 실행된 뒤 `layers[0]`에 진입하는
+순간 `(hidden_states, kwargs)`를 CPU에 캐시하고 `_Abort` 예외로 나머지 forward를 즉시 중단.
+
+**선택 이유**: 모델 구조와 무관하게 동작.
+- `register_forward_pre_hook(with_kwargs=True)` 대신 monkey-patch 선택 — `with_kwargs`는
+  PyTorch 2.1+에서만 지원(우리 요건은 2.0 이상)이고, 함수 교체가 더 직관적.
+- `_Abort` 예외 클래스를 메서드 내부에 정의 — 다른 예외와 명확히 구분.
+
+**scale 동등성 보장**: calibration forward 중 `input_scale=None` → activation fake-quant 없음.
+full-model과 sequential 양쪽 모두 동일한 activation이 observer에 들어가므로 scale 값 일치.
+`tests/test_sequential_calib.py:test_sequential_scale_equals_full`로 검증.
+
+**kwargs 재사용**: decoder layer 사이에 `position_ids`, `attention_mask`, `position_embeddings`
+(cos/sin) 등 kwargs는 불변 → 첫 캡처 kwargs를 모든 layer에 재사용. 새 hidden_states만 교체.
+
+**device 처리**: `compute_device = cuda if available else model.device`.
+layer별 원래 device는 `layer_devices`에 기록해 복귀. scale buffer도 `mod.weight.device`를
+따라가므로 `.cpu()` → `to(original_dev)` 연쇄 이동 시 scale도 함께 이동.
+
+---
+
 ### 작업 위치 (2026-05-19 갱신)
 
-- M6-B GPTQ 실구현 + PPL 측정 완료.
-- fake_quant_linear dtype 버그 수정 완료.
-- 코드 품질 개선 (hook 잔류 버그, assert → RuntimeError, 주석) 완료.
-- 단위 테스트 39개 통과.
+- M6-C Sequential Calibration 구현 완료.
+- 단위 테스트 42개 통과.
 
 ### 다음 작업
 
-- M6-C Sequential calibration 구현 (선택).
 - AWQ 구현 (선택).
+- Float8 / save_to_hub stub → 실구현 (선택).

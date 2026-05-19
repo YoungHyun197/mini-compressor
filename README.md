@@ -331,14 +331,14 @@ pytest tests/ -v
 - [x] End-to-End 데모 (`demo.py`) — 네 scheme (W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant) compress → generate → save → load 전체 흐름
 - [x] **Multi-GPU observer sync** (`BaseObserver.sync()`) — all_reduce / all_gather rank 동기화, gloo 2-proc 검증
 - [x] **멀티모델 검증** — TinyLlama-1.1B (LLaMA 아키텍처)에서 라이브러리 코드 수정 없이 동작 확인
-- [x] 단위 테스트 39개, CI 통과
+- [x] **Sequential calibration** (`QuantizationModifier.calibrate(sequential=True)`) — layer별 GPU offload로 peak 메모리 O(single_layer) 절감
+- [x] 단위 테스트 42개, CI 통과
 
 ### 진행 중
 
 아래 기능은 인터페이스(stub)만 정의되어 있으며 호출 시 `NotImplementedError`를 발생시킵니다. 각 stub에는 입출력 타입, docstring, 의도된 동작이 명세되어 있습니다.
 
 - [ ] **AWQ** (`AWQModifier`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
-- [ ] **Sequential calibration** (`QuantizationModifier.calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)
 - [ ] **실 2-GPU 실측** — observer sync는 구현·검증 완료(gloo 2-proc). `device_map="auto"` 물리 cross-GPU 배치와 Tensor Parallelism은 하드웨어 한계로 미실측
 - [ ] **HuggingFace Hub 업로드** (`Compressor.save_to_hub()`) — 로컬 저장 후 Hub push

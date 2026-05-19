@@ -109,24 +109,19 @@ class QuantizationModifier(QuantizationMixin, BaseModifier):
         Args:
             dataloader: 캘리브레이션 배치 이터러블. 각 배치는 dict, tuple, Tensor 중 하나.
             num_samples: 사용할 최대 배치 수. None이면 전체 사용.
-            sequential: True이면 layer별 순차 캘리브레이션 (메모리 효율). 미구현.
-
-        Note:
-            sequential=True는 현재 미구현입니다. 활성화 시 NotImplementedError를 발생시킵니다.
-            구현 예정 동작: 각 FakeQuantLinear를 순서대로 활성화하고 나머지는 bypass하여
-            GPU 메모리 사용량을 O(single_layer)로 줄입니다.
+            sequential: True이면 layer별 순차 캘리브레이션.
+                        model.model.layers 구조 필요 (Qwen3/LLaMA 등 HF CausalLM 표준).
+                        peak GPU 메모리를 O(single_layer)로 줄인다.
         """
-        if sequential:
-            raise NotImplementedError(
-                "sequential calibration is not yet implemented. "
-                "Use sequential=False (default) for full-model forward calibration."
-            )
-
         if self.scheme.activation is None or self.scheme.activation.dynamic:
             return
 
         if self.model is None:
             raise RuntimeError("initialize(model)을 먼저 호출해야 합니다.")
+
+        if sequential:
+            self._calibrate_sequential(dataloader, num_samples)
+            return
 
         self.model.eval()
         n = 0
@@ -150,3 +145,139 @@ class QuantizationModifier(QuantizationMixin, BaseModifier):
                 # CPU로 모아 결과가 CPU에 남을 수 있음 (device_map="auto" 호환).
                 mod.input_scale = scale.to(mod.weight.device)
                 mod.input_zero_point = zp.to(mod.weight.device)
+
+    def _calibrate_sequential(
+        self,
+        dataloader: Iterable,
+        num_samples: Optional[int] = None,
+    ) -> None:
+        """layer별 순차 calibration — decoder layer 하나씩 GPU에 올려 peak 메모리를 줄인다.
+
+        지원 구조: model.model.layers (Qwen3/LLaMA 등 HF CausalLM 표준).
+        해당 구조가 아니면 RuntimeError를 발생시킨다.
+
+        동작:
+            1. decoder layers 전체를 CPU로 내린다 (embedding/norm은 유지).
+            2. layers[0].forward를 임시 대체해 배치마다 embedding 출력(hidden_states + kwargs)을
+               CPU에 캐시한 뒤 _Abort 예외로 나머지 forward를 중단한다.
+            3. 각 decoder layer를 compute_device로 올려 캐시된 hidden_states로 forward →
+               observer 수집 → scale 확정 → CPU 반환.
+            4. 모든 layer를 원래 device로 복귀.
+
+        scale 동등성:
+            full-model calibration과 동일한 데이터·알고리즘이므로 input_scale 값이 일치한다.
+            calibration forward 중 input_scale=None → activation fake-quant 없음 (양쪽 동일).
+        """
+        inner = getattr(self.model, "model", None)
+        if inner is None or not hasattr(inner, "layers"):
+            raise RuntimeError(
+                "_calibrate_sequential은 model.model.layers 구조만 지원합니다. "
+                "sequential=False를 사용하세요."
+            )
+
+        layers = list(inner.layers)
+
+        # GPU가 있으면 CUDA, 없으면 현재 모델 device를 compute_device로 사용
+        compute_device = (
+            torch.device("cuda")
+            if torch.cuda.is_available()
+            else next(self.model.parameters()).device
+        )
+
+        # 배치 수집
+        batches: list = []
+        for i, batch in enumerate(dataloader):
+            if num_samples is not None and i >= num_samples:
+                break
+            batches.append(batch)
+        if not batches:
+            raise ValueError(
+                "_calibrate_sequential: dataloader가 비어있어 activation 통계를 수집할 수 없습니다."
+            )
+
+        # 1. decoder layers를 CPU로 내리고 원래 device를 기록
+        layer_devices = [
+            next((p.device for p in layer.parameters()), torch.device("cpu"))
+            for layer in layers
+        ]
+        for layer in layers:
+            layer.cpu()
+        if compute_device.type == "cuda":
+            torch.cuda.empty_cache()
+
+        # 2. layers[0] 입력 캡처
+        #    layers[0].forward를 임시 대체 → (args, kwargs)를 CPU 텐서로 저장 후 _Abort 발생.
+        #    embedding + pre-processing(causal_mask, position_ids 등)이 compute되고 나서
+        #    layers[0]에 진입하는 순간 캡처하므로 모델 구조와 무관하게 동작한다.
+        class _Abort(Exception):
+            pass
+
+        captured: list = []
+        orig_fwd = layers[0].forward
+
+        def _capture_fwd(*args, **kwargs):
+            captured.append((
+                tuple(a.detach().cpu() if isinstance(a, torch.Tensor) else a for a in args),
+                {k: v.detach().cpu() if isinstance(v, torch.Tensor) else v
+                 for k, v in kwargs.items()},
+            ))
+            raise _Abort()
+
+        layers[0].forward = _capture_fwd
+        self.model.eval()
+        with torch.no_grad():
+            for batch in batches:
+                try:
+                    if isinstance(batch, dict):
+                        self.model(**batch)
+                    elif isinstance(batch, (list, tuple)):
+                        self.model(*batch)
+                    else:
+                        self.model(batch)
+                except _Abort:
+                    pass
+        layers[0].forward = orig_fwd
+
+        if len(captured) != len(batches):
+            raise RuntimeError(
+                f"layers[0] 입력 캡처 실패: {len(captured)}/{len(batches)} 배치. "
+                "model.model.layers[0].forward가 호출되지 않았는지 확인하세요."
+            )
+
+        # 3. layer별 순차 처리
+        for layer in layers:
+            layer.to(compute_device)
+            next_captured: list = []
+
+            with torch.no_grad():
+                for args_cpu, kwargs_cpu in captured:
+                    args_dev = tuple(
+                        a.to(compute_device) if isinstance(a, torch.Tensor) else a
+                        for a in args_cpu
+                    )
+                    kwargs_dev = {
+                        k: v.to(compute_device) if isinstance(v, torch.Tensor) else v
+                        for k, v in kwargs_cpu.items()
+                    }
+                    out = layer(*args_dev, **kwargs_dev)
+                    out_h = out[0] if isinstance(out, tuple) else out
+                    # position_ids, attention_mask 등 kwargs는 레이어 간 불변 → 재사용
+                    next_captured.append(((out_h.detach().cpu(),), kwargs_cpu))
+
+            # 이 layer의 scale 확정 (layer가 compute_device에 있는 동안)
+            for mod in layer.modules():
+                if isinstance(mod, FakeQuantLinear) and mod.input_observer is not None:
+                    mod.input_observer.sync()
+                    scale, zp = mod.input_observer.compute_scale_zp()
+                    mod.input_scale = scale.to(mod.weight.device)
+                    mod.input_zero_point = zp.to(mod.weight.device)
+                    mod.input_observer = None  # finalize()와 동일 — observer 즉시 해제
+
+            layer.cpu()
+            if compute_device.type == "cuda":
+                torch.cuda.empty_cache()
+            captured = next_captured
+
+        # 4. layers를 원래 device로 복귀
+        for layer, dev in zip(layers, layer_devices):
+            layer.to(dev)

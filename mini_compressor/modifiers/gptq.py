@@ -51,7 +51,8 @@ class GPTQModifier(QuantizationMixin, BaseModifier):
             dataloader: 캘리브레이션 배치. 각 배치는 dict, tuple, Tensor 중 하나.
             num_samples: 사용할 최대 배치 수. None이면 전체 사용.
         """
-        assert self.model is not None, "initialize(model)을 먼저 호출해야 합니다."
+        if self.model is None:
+            raise RuntimeError("initialize(model)을 먼저 호출해야 합니다.")
 
         weight_spec = self.scheme.weight
         if weight_spec.granularity != "per_group":
@@ -79,27 +80,27 @@ class GPTQModifier(QuantizationMixin, BaseModifier):
             return  # 교체 대상 없음
 
         dataloader = list(dataloader)
-        if not dataloader:
+        try:
+            if not dataloader:
+                raise ValueError(
+                    "GPTQModifier는 calibration 데이터가 필요합니다 (dataloader가 비어 있습니다)."
+                )
+            self.model.eval()
+            n = 0
+            with torch.no_grad():
+                for batch in dataloader:
+                    if num_samples is not None and n >= num_samples:
+                        break
+                    if isinstance(batch, dict):
+                        self.model(**batch)
+                    elif isinstance(batch, (list, tuple)):
+                        self.model(*batch)
+                    else:
+                        self.model(batch)
+                    n += 1
+        finally:
             for h in handles:
                 h.remove()
-            raise ValueError("GPTQModifier는 calibration 데이터가 필요합니다 (dataloader가 비어 있습니다).")
-
-        self.model.eval()
-        n = 0
-        with torch.no_grad():
-            for batch in dataloader:
-                if num_samples is not None and n >= num_samples:
-                    break
-                if isinstance(batch, dict):
-                    self.model(**batch)
-                elif isinstance(batch, (list, tuple)):
-                    self.model(*batch)
-                else:
-                    self.model(batch)
-                n += 1
-
-        for h in handles:
-            h.remove()
 
         # layer별 GPTQ 적용
         for mod in self.model.modules():

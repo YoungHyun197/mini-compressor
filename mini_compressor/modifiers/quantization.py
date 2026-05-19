@@ -37,11 +37,12 @@ class QuantizationMixin:
     def _should_replace(self, name: str, module: nn.Module) -> bool:
         if not isinstance(module, nn.Linear):
             return False
-        if name in self.ignore:
+        class_name = type(module).__name__
+        if any(fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(class_name, pat)
+               for pat in self.ignore):
             return False
         if self.targets is None:
             return True
-        class_name = type(module).__name__
         return any(
             fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(class_name, pat)
             for pat in self.targets
@@ -61,6 +62,14 @@ class QuantizationMixin:
         ]
 
         for name, mod in to_replace:
+            if (self.scheme.weight.granularity == "per_group"
+                    and self.scheme.weight.group_size is not None
+                    and mod.in_features % self.scheme.weight.group_size != 0):
+                raise ValueError(
+                    f"'{name}': in_features={mod.in_features}가 "
+                    f"group_size={self.scheme.weight.group_size}의 배수가 아닙니다. "
+                    "per_group 양자화는 in_features % group_size == 0을 요구합니다."
+                )
             fql = FakeQuantLinear.from_float(mod, self.scheme)
             if self.compute_scales:
                 wobs = build_observer(self.scheme.weight).to(fql.weight.device)

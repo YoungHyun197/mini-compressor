@@ -848,6 +848,23 @@ unit test 7개: preserves_forward_output, layernorm_bias, initialize_required, e
 변경 없음: `schemes.py`, `serialize.py`  
 테스트: 49개 통과 (7개 추가)
 
+### 코드 품질 개선 ✅ 완료 (2026-05-19 — GPT 리뷰 반영)
+
+```text
+1. ignore fnmatch 버그 수정 (quantization.py)
+   name in self.ignore (exact match) → fnmatch 패턴 매칭 (targets와 동일 방식)
+2. group_size 배수 검증 추가 (quantization.py)
+   initialize() 진입 시 in_features % group_size != 0 이면 ValueError
+3. GPTQModifier hook try/finally (gptq.py)
+   forward loop 예외 시 hook 잔류 방지
+4. assert → RuntimeError (gptq.py)
+   python -O 비활성화 방지, SmoothQuantModifier와 일관성
+5. frozen=True (schemes.py)
+   QuantizationSpec, QuantizationScheme 불변 객체로 명시
+   slides.md "Scheme = frozen dataclass" 주장과 코드 일치
+발표자료(slides.md, script.md) 최신화: from_recipe API, 구현 알고리즘 현황, 6종 PPL 표
+```
+
 ### Milestone 7 ✅ (M5와 병합 완료 — 2026-05-11)
 
 ```text

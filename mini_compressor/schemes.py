@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-@dataclass
+@dataclass(frozen=True)
 class QuantizationSpec:
     num_bits: int
     symmetric: bool
@@ -15,7 +15,7 @@ class QuantizationSpec:
     calibration_method: str = "minmax"  # "minmax" | "percentile" | "mse" | "kl_divergence"
 
 
-@dataclass
+@dataclass(frozen=True)
 class QuantizationScheme:
     name: str
     weight: QuantizationSpec

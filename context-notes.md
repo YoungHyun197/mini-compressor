@@ -422,17 +422,17 @@ if not model_id:
 
 결과: `from_pretrained("Qwen/Qwen3-0.6B")` 로 HF cache에서 로드 → UNEXPECTED 경고 없음.
 
-### 21. stub 확장 목록 (인터페이스 정의 완료, 구현 예정)
+### 21. 확장 목록 현황 (2026-05-19 업데이트)
 
-| stub | 파일 | 위치 | 설명 |
+| 항목 | 파일 | 상태 | 설명 |
 |------|------|------|------|
-| `GPTQModifier` | modifiers/gptq.py | 클래스 | Hessian 기반 W4A16. BaseModifier 상속 |
-| `AWQModifier` | modifiers/awq.py | 클래스 | activation magnitude 기반 W4A16. BaseModifier 상속 |
-| `BaseObserver.sync()` | observer.py | 메서드 | multi-GPU all-reduce 자리 표시 |
-| `save_to_hub()` | compressor.py | 메서드 | HF Hub 업로드. 파일 구조가 이미 HF 호환 |
-| float8 경로 | fake_quant_linear.py | 분기 | `spec.dtype == "float8"` 시 NotImplementedError |
+| `GPTQModifier` | modifiers/gptq.py | ✅ 구현 완료 | Hessian 기반 W4A16. W4A16 RTN 25.89 → 20.96 (-4.93) |
+| `AWQModifier` | modifiers/awq.py | ✅ 구현 완료 (POC) | activation magnitude grid-search W4A16 |
+| `BaseObserver.sync()` | observer.py | ✅ 구현 완료 | MinMax: all_reduce. Percentile/MSE/KL: all_gather_object |
+| `save_to_hub()` | compressor.py | stub | HF Hub 업로드. 파일 구조가 이미 HF 호환 |
+| float8 경로 | fake_quant_linear.py | stub | `spec.dtype == "float8"` 시 NotImplementedError |
 
-모든 stub은 입출력 타입, 의도된 동작, 참고 논문을 docstring에 명세함.
+stub 항목은 입출력 타입, 의도된 동작, 참고 논문을 docstring에 명세함.
 
 ---
 
@@ -772,8 +772,37 @@ layer별 원래 device는 `layer_devices`에 기록해 복귀. scale buffer도 `
 
 - M6-C Sequential Calibration 구현 완료.
 - M6-B AWQ 구현 완료.
+- 코드 품질 개선 (GPT 리뷰 반영) 완료.
+- 발표자료(slides.md, script.md) 최신화 완료.
 - 단위 테스트 49개 통과.
 
 ### 다음 작업
 
 - Float8 / save_to_hub stub → 실구현 (선택).
+
+---
+
+## 2026-05-19 — 코드 품질 개선 (GPT 리뷰 반영 5건)
+
+### 수정 1. `ignore` fnmatch 패턴 매칭 (`quantization.py`)
+
+**버그**: `_should_replace`에서 `ignore` 체크가 `name in self.ignore` (exact match)로 구현돼 있어 `"lm_head"` 같은 정확한 문자열만 제외됐고 `"*.lm_head"` 같은 fnmatch 패턴은 동작하지 않았음.
+**수정**: `targets`와 동일하게 `fnmatch.fnmatch(name, pat) or fnmatch.fnmatch(class_name, pat)` 패턴으로 교체. README에 명세된 동작과 코드가 일치하게 됨.
+
+### 수정 2. `group_size` 배수 검증 (`quantization.py`)
+
+**추가**: `initialize()` 진입 시 `mod.in_features % group_size != 0`이면 즉시 `ValueError` 발생. per_group 양자화 공식의 선제조건. 이전에는 런타임 shape 오류로만 발견됐음.
+
+### 수정 3. `GPTQModifier.calibrate()` hook try/finally (`gptq.py`)
+
+**버그**: forward loop 중 예외 발생 시 `handles`의 forward pre-hook이 모델에 잔류. Hessian 수집이 계속 일어나 재사용 시 오염.
+**수정**: `try/finally`로 감싸 예외 시에도 `h.remove()` 보장.
+
+### 수정 4. `assert` → `RuntimeError` (`gptq.py`, 이미 다른 모듈에도 적용됨)
+
+**버그**: `GPTQModifier.calibrate()`의 `assert self.model is not None`은 `python -O`로 비활성화 가능. API 계약을 assert로 표현하는 것은 부적절.
+**수정**: `RuntimeError("initialize(model)을 먼저 호출해야 합니다.")`로 교체. `SmoothQuantModifier`(기존 RuntimeError)와 일관성 확보.
+
+### 수정 5. `QuantizationSpec`, `QuantizationScheme` frozen=True (`schemes.py`)
+
+**추가**: `@dataclass(frozen=True)` 적용. 설정 객체는 생성 후 변경 불가여야 하는 불변식. slides.md의 "Scheme = frozen dataclass" 주장과 코드가 일치하게 됨.

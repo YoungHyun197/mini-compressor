@@ -9,7 +9,7 @@
 ```
 mini_compressor/
   schemes.py             — QuantizationSpec, QuantizationScheme, W8A8/W4A16/W8A8_DYNAMIC, SCHEME_REGISTRY
-  observer.py            — BaseObserver(+sync 4종 구현), MinMax/Percentile/MSE/KLDivergence observer
+  observer.py            — BaseObserver(+sync 3종 구현), MinMax/Percentile/MSE observer
   fake_quant_linear.py   — FakeQuantLinear (flat buffer, dynamic 분기, float8 stub)
   modifiers/             — modifier composition pattern (llm-compressor 정렬)
     _pair_utils.py       — _find_smooth_pairs / _collect_linears / _has_affine_weight (SQ+AWQ 공유 유틸)
@@ -90,7 +90,6 @@ W4A16는 `scheme.activation = None`이므로 calibrate()에서 즉시 return.
 | MinMaxObserver | `"minmax"` | running min/max 누적 |
 | PercentileObserver | `"percentile"` | 전체 데이터 수집 후 percentile clip |
 | MSEObserver | `"mse"` | alpha grid-search로 MSE 최소화 |
-| KLDivergenceObserver | `"kl_divergence"` | histogram 기반 KL divergence 최소화 |
 
 ### 핵심 설계 결정
 
@@ -98,7 +97,7 @@ W4A16는 `scheme.activation = None`이므로 calibrate()에서 즉시 return.
 
 - **MinMaxObserver의 buffer**: `min_val`, `max_val`을 `register_buffer`로 등록. `model.to(device)` 시 자동으로 같은 device로 이동.
 
-- **PercentileObserver / MSEObserver / KLDivergence**: raw data를 CPU list로 수집 (`_data: list[torch.Tensor]`). GPU 메모리 절약 목적. compute 시점에 `torch.cat`으로 합침.
+- **PercentileObserver / MSEObserver**: raw data를 CPU list로 수집 (`_data: list[torch.Tensor]`). GPU 메모리 절약 목적. compute 시점에 `torch.cat`으로 합침.
 
 - **`_scale_zp_from_range()` 공통 메서드**: min/max → scale, zero_point 계산 로직을 BaseObserver 메서드로 분리 (생성 시 받은 spec 사용, 단위별 broadcast). 모든 observer가 공유.
 
@@ -428,7 +427,7 @@ if not model_id:
 |------|------|------|------|
 | `GPTQModifier` | modifiers/gptq.py | ✅ 구현 완료 | Hessian 기반 W4A16. W4A16 RTN 25.89 → 20.96 (-4.93) |
 | `AWQModifier` | modifiers/awq.py | ✅ 구현 완료 (POC) | activation magnitude grid-search W4A16 |
-| `BaseObserver.sync()` | observer.py | ✅ 구현 완료 | MinMax: all_reduce. Percentile/MSE/KL: all_gather_object |
+| `BaseObserver.sync()` | observer.py | ✅ 구현 완료 | MinMax: all_reduce. Percentile/MSE: all_gather_object |
 | `save_to_hub()` | compressor.py | stub | HF Hub 업로드. 파일 구조가 이미 HF 호환 |
 | float8 경로 | fake_quant_linear.py | stub | `spec.dtype == "float8"` 시 NotImplementedError |
 
@@ -576,7 +575,7 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **결정**: observer 종류에 따라 두 방식.
 - `MinMaxObserver.sync()` — `all_reduce(min_val, MIN)` / `all_reduce(max_val, MAX)`. min·max는 결합법칙이 성립해 부분 결과를 정확히 병합. 통신량 O(1). road_map 원칙 2("MinMax 통계를 tensor 연산으로 유지")가 노린 결과.
-- `Percentile/MSE/KL.sync()` — `all_gather_object`로 raw `_data`를 전 rank에 공유. 이 셋은 percentile·grid-search·histogram 등 비결합적 계산이라 부분 통계 병합 불가. (a) raw data 공유 vs (b) 알고리즘 재구조화 중, (b)는 동작 코드 3개를 갈아엎음 → (a) 채택. `compute_scale_zp` 무수정 + `sync()`만 추가. 한계: 메모리 rank배 → 대규모는 (b)가 future work.
+- `Percentile/MSE.sync()` — `all_gather_object`로 raw `_data`를 전 rank에 공유. 둘 다 percentile·grid-search 등 비결합적 계산이라 부분 통계 병합 불가. (a) raw data 공유 vs (b) 알고리즘 재구조화 중, (b)는 동작 코드 2개를 갈아엎음 → (a) 채택. `compute_scale_zp` 무수정 + `sync()`만 추가. 한계: 메모리 rank배 → 대규모는 (b)가 future work.
 - stub docstring의 "MSE: all_reduce(argmin)"은 부정확(rank별 argmin이 달라 병합 안 됨) — all_gather로 바로잡음.
 
 **no-op 보장**: `_dist_active()`(`dist.is_initialized() and world_size>1`)가 아니면 `sync()`는 즉시 return. 단일 GPU 경로(기존 테스트·demo·PPL) 무변경.
@@ -587,7 +586,7 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 ### 30. device_map 감사 — input_scale을 weight.device로 보정
 
-**13-2 감사 결과**: `weight_scale`은 weight에서 계산돼 device를 따라감. MinMax observer는 FakeQuantLinear 서브모듈이라 buffer도 따라감. 그러나 Percentile/MSE/KL은 `update()`에서 `_data`를 `.cpu()`로 모아 `input_scale`이 CPU에 남음 → GPU 모델 forward 시 device mismatch.
+**13-2 감사 결과**: `weight_scale`은 weight에서 계산돼 device를 따라감. MinMax observer는 FakeQuantLinear 서브모듈이라 buffer도 따라감. 그러나 Percentile/MSE는 `update()`에서 `_data`를 `.cpu()`로 모아 `input_scale`이 CPU에 남음 → GPU 모델 forward 시 device mismatch.
 
 **fix**: `calibrate()`에서 `mod.input_scale = scale.to(mod.weight.device)` (zp 동일). 단일 CPU/GPU 모두 안전.
 
@@ -616,7 +615,6 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - `BaseObserver(spec)` — 생성 시 spec을 받아 granularity 인지. `compute_scale_zp()`는 무인자.
 - `_to_units(t, spec)` 헬퍼 — per_tensor/per_channel/per_group을 (단위..., 원소) 형태로 정리해 `amin/amax/quantile(dim=-1)` 한 줄로 처리.
 - `_compute_weight_scale` 함수 삭제 → `QuantizationModifier.initialize()`가 weight observer를 1회 호출.
-- KL은 per_tensor 전용 — per-channel 히스토그램 비용이 비현실적이라 생성 시점에 거부.
 
 **대칭 분기 교정**: `_scale_zp_from_range`의 symmetric scale을 `(max-min)/2qmax` → `max(|min|,|max|)/qmax`로 수정. weight를 observer로 보내면서 드러난 잠재 버그 — 한쪽 꼬리가 길면 그쪽이 잘리던 문제. weight minmax 결과는 기존 `absmax/qmax`와 수치 동일(회귀 없음, 검증 완료).
 

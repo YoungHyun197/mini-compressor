@@ -17,8 +17,8 @@ def _dist_active() -> bool:
 def _sync_data(data: list[torch.Tensor]) -> list[torch.Tensor]:
     """rank별 raw 통계 데이터 리스트를 all_gather해 전역 리스트로 합친다.
 
-    Percentile/MSE/KL은 raw 데이터를 모아 compute_scale_zp에서 비결합적 계산
-    (percentile·grid-search·histogram)을 한다. 부분 통계로는 병합이 불가능하므로
+    Percentile/MSE는 raw 데이터를 모아 compute_scale_zp에서 비결합적 계산
+    (percentile·grid-search)을 한다. 부분 통계로는 병합이 불가능하므로
     raw 데이터를 전 rank가 공유해 동일한 전역 결과를 내도록 한다.
     분산 환경이 아니면 입력을 그대로 돌려준다 (no-op).
     """
@@ -225,103 +225,10 @@ class MSEObserver(BaseObserver):
         self._data = _sync_data(self._data)
 
 
-class KLDivergenceObserver(BaseObserver):
-    """histogram 기반 KL divergence 최소화로 clip range 탐색.
-
-    히스토그램은 per_tensor 분포에서만 의미가 있어 per_tensor만 지원한다.
-    per_channel/per_group은 채널마다 별도 히스토그램이 필요해 비용이 비현실적이므로,
-    weight에 kl_divergence를 지정하면 생성 시점에 명확히 거부한다.
-    multi-GPU: raw 데이터를 all_gather한 뒤 전역 분포에서 히스토그램 계산.
-    """
-
-    def __init__(self, spec: QuantizationSpec, num_bins: int = 2048):
-        super().__init__(spec)
-        if spec.granularity != "per_tensor":
-            raise NotImplementedError(
-                "KLDivergenceObserver는 per_tensor만 지원합니다 "
-                f"(요청: '{spec.granularity}'). per_channel/per_group weight에는 "
-                "minmax / percentile / mse 중 하나를 사용하세요."
-            )
-        self.num_bins = num_bins
-        self._data: list[torch.Tensor] = []
-
-    def update(self, x: torch.Tensor) -> None:
-        self._data.append(x.detach().flatten().cpu())
-
-    def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        spec = self.spec
-        all_data = torch.cat(self._data).float()
-        qmax = 2 ** (spec.num_bits - 1) - 1
-        qmin = -qmax if spec.symmetric else -(2 ** (spec.num_bits - 1))
-        num_levels = qmax - qmin + 1
-
-        abs_max = all_data.abs().max().item()
-        if abs_max < 1e-8:
-            return torch.tensor(1e-8), torch.zeros(1)
-
-        hist = torch.histc(all_data, bins=self.num_bins, min=-abs_max, max=abs_max)
-        hist = hist + 1e-8
-
-        best_kl = float("inf")
-        best_clip_max = abs_max
-
-        for i in range(self.num_bins, self.num_bins // 2, -1):
-            clip_max = abs_max * i / self.num_bins
-            lo = self.num_bins - i if spec.symmetric else 0
-            hi = i - 1
-
-            p = hist.clone()
-            p[lo] += p[:lo].sum()
-            p[:lo] = 0
-            p[hi] += p[hi + 1:].sum()
-            p[hi + 1:] = 0
-            p = p / p.sum()
-
-            num_range_bins = hi - lo + 1
-            bins_per_level = max(num_range_bins // num_levels, 1)
-            q = torch.zeros_like(p)
-            for lv in range(num_levels):
-                s = lo + lv * bins_per_level
-                e = min(s + bins_per_level, hi + 1)
-                if s >= e:
-                    continue
-                level_sum = p[s:e].sum()
-                nonzero = (p[s:e] > 1e-10).float().sum()
-                if nonzero > 0:
-                    q[s:e] = torch.where(
-                        p[s:e] > 1e-10,
-                        level_sum / nonzero,
-                        torch.zeros_like(p[s:e]),
-                    )
-
-            total_q = q.sum()
-            if total_q < 1e-8:
-                continue
-            q = q / total_q
-
-            mask = (p > 1e-10) & (q > 1e-10)
-            kl = (p[mask] * torch.log(p[mask] / q[mask])).sum().item()
-            if kl < best_kl:
-                best_kl = kl
-                best_clip_max = clip_max
-
-        min_val = torch.tensor(-best_clip_max if spec.symmetric else min(all_data.min().item(), 0.0))
-        max_val = torch.tensor(best_clip_max)
-        return self._scale_zp_from_range(min_val, max_val)
-
-    def reset(self) -> None:
-        self._data.clear()
-
-    def sync(self) -> None:
-        """rank별 raw 데이터를 all_gather해 전역 분포로 합친다."""
-        self._data = _sync_data(self._data)
-
-
 OBSERVER_REGISTRY: dict[str, type[BaseObserver]] = {
     "minmax": MinMaxObserver,
     "percentile": PercentileObserver,
     "mse": MSEObserver,
-    "kl_divergence": KLDivergenceObserver,
 }
 
 

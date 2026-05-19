@@ -16,7 +16,7 @@ from mini_compressor.schemes import W8A8
 
 _WORLD = 2
 _ACT_SPEC = W8A8.activation  # int8, per_tensor, asymmetric
-_METHODS = ["minmax", "percentile", "mse", "kl_divergence"]
+_METHODS = ["minmax", "percentile", "mse"]
 
 
 def _spec(method: str):

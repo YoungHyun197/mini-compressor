@@ -11,7 +11,7 @@ PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingF
 - **One-click API** — `Compressor.from_recipe("w8a8").compress(model, dataloader)` 한 줄로 압축
 - **HuggingFace 호환** — `safetensors` + compressed-tensors 포맷으로 저장·복원
 - **Fake Quantization** — float16 weight를 유지한 채 quantization 오차 시뮬레이션 (런타임 검증 전 정확도 평가 단계)
-- **다양한 Calibration** — weight·activation 모두 MinMax / Percentile / MSE observer 선택 (KL은 activation 전용)
+- **다양한 Calibration** — weight·activation 모두 MinMax / Percentile / MSE observer 선택 가능
 - **아키텍처 독립** — `fnmatch` 패턴 기반 targets/ignore로 모델 구조 비종속
 
 ---
@@ -21,7 +21,7 @@ PyTorch 기반 LLM post-training quantization 라이브러리입니다. HuggingF
 ```
 mini_compressor/
 ├── schemes.py             — QuantizationSpec, QuantizationScheme, W8A8/W4A16 프리셋
-├── observer.py            — weight·activation 공용 통계 observer (MinMax / Percentile / MSE / KL-Divergence)
+├── observer.py            — weight·activation 공용 통계 observer (MinMax / Percentile / MSE)
 ├── fake_quant_linear.py   — nn.Linear 교체 모듈 (flat buffer: weight_scale, input_scale)
 ├── modifiers/             — 알고리즘별 Modifier 클래스 (composition pattern)
 │   ├── base.py            — BaseModifier 추상 인터페이스 (initialize / calibrate / finalize)
@@ -186,9 +186,7 @@ weight·activation은 동일한 observer 추상화를 공유합니다. `Quantiza
 | `"minmax"` | running min/max 누적 | 빠름, outlier에 민감 |
 | `"percentile"` | percentile clip | outlier 제거, 하이퍼파라미터 필요 |
 | `"mse"` | alpha grid-search로 MSE 최소화 | 정확하지만 느림 |
-| `"kl_divergence"` | histogram 기반 KL divergence 최소화 | TensorRT 방식, activation(per_tensor) 전용 |
-
-weight(per_channel·per_group)는 `minmax`·`percentile`·`mse`를 지원합니다. `kl_divergence`는 채널마다 히스토그램이 필요해 비용이 비현실적이므로 activation(per_tensor) 전용이며, weight에 지정하면 명시적으로 거부됩니다.
+weight(per_channel·per_group)와 activation 모두 `minmax`·`percentile`·`mse`를 지원합니다.
 
 ---
 
@@ -325,7 +323,7 @@ pytest tests/ -v
 ### 완료
 
 - [x] Fake quantization (W4A16 RTN, W8A8 static, W8A8 dynamic per-token)
-- [x] 4종 calibration observer (MinMax, Percentile, MSE, KL-Divergence)
+- [x] 3종 calibration observer (MinMax, Percentile, MSE)
 - [x] compressed-tensors 호환 save / load + round-trip 일치 확인 (Qwen3-0.6B)
 - [x] Compressor one-click API + modifier composition (BaseModifier + per-algorithm class)
 - [x] **SmoothQuant** (`SmoothQuantModifier`) — activation 분포 평탄화로 W8A8 정확도 향상

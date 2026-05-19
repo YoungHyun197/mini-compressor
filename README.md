@@ -110,21 +110,26 @@ compressor = Compressor.from_recipe("w8a8", ignore=["lm_head"])
 
 ### W8A8 + SmoothQuant — activation 분포 평탄화
 
-W8A8 static의 정확도 손실은 주로 activation outlier에서 옵니다. SmoothQuant는 outlier를 weight 쪽으로 옮겨 per-tensor int8 양자화 오차를 줄입니다.
+SmoothQuant는 activation outlier를 weight 쪽으로 옮겨 INT8 양자화 오차를 줄입니다.
+`w8a8_smoothquant` recipe는 per-token dynamic activation을 기본으로 사용합니다.
+dynamic activation은 런타임에 토큰별 scale을 계산하므로 `dataloader` 없이도 동작합니다.
+SmoothQuant weight 변환만 calibration data가 필요합니다.
 
 ```python
 from mini_compressor import Compressor
 
+# SmoothQuant weight 변환은 calibration data 필요, activation은 dynamic이므로 불필요
 compressor = Compressor.from_recipe("w8a8_smoothquant", ignore=["lm_head"])
 compressor.compress(model, dataloader=calib_inputs)
 compressor.save(model, "./qwen3-w8a8-smq", tokenizer=tokenizer)
 ```
 
-`from_recipe`는 여러 modifier가 chain된 알고리즘 파이프라인을 한 줄 preset으로 노출합니다. `alpha` 등 세부 파라미터를 직접 제어하려면 modifier list를 그대로 구성합니다.
+`alpha` 등 세부 파라미터를 직접 제어하거나 static activation을 쓰려면 modifier list를 구성합니다.
 
 ```python
-from mini_compressor import Compressor, QuantizationModifier, SmoothQuantModifier, W8A8
+from mini_compressor import Compressor, QuantizationModifier, SmoothQuantModifier, W8A8, W8A8_DYNAMIC
 
+# static activation 조합
 compressor = Compressor([
     SmoothQuantModifier(alpha=0.5),
     QuantizationModifier(W8A8, targets=["Linear"], ignore=["lm_head"]),
@@ -132,7 +137,7 @@ compressor = Compressor([
 compressor.compress(model, dataloader=calib_inputs)
 ```
 
-`Compressor`는 modifier list를 받아 각 modifier에 `initialize → calibrate → finalize`를 순차 호출합니다. SmoothQuant + W8A8, AWQ + W4A16 같은 알고리즘 chain을 list 순서로 자연스럽게 표현하며, `from_recipe`는 그 위에 얹은 선언적 진입점입니다.
+`Compressor`는 modifier list를 받아 각 modifier에 `initialize → calibrate → finalize`를 순차 호출합니다. SmoothQuant + W8A8_DYNAMIC, AWQ + W4A16 같은 알고리즘 chain을 list 순서로 자연스럽게 표현하며, `from_recipe`는 그 위에 얹은 선언적 진입점입니다.
 
 ### 저장된 모델 불러오기
 
@@ -157,7 +162,7 @@ model = load_pretrained("./qwen3-w8a8")
 | `w4a16_awq` | AWQ → W4A16 RTN | INT4 weight-only + activation magnitude grid-search scaling |
 | `w8a8` | W8A8 RTN | INT8 W/A — weight per-channel, activation per-tensor MinMax static |
 | `w8a8_dynamic` | W8A8 dynamic RTN | INT8 W/A — activation per-token 런타임 scale |
-| `w8a8_smoothquant` | SmoothQuant(α=0.5) → W8A8 RTN | W8A8 + activation outlier를 weight로 흡수 |
+| `w8a8_smoothquant` | SmoothQuant(α=0.5) → W8A8 dynamic | per-token dynamic INT8 + activation outlier를 weight로 흡수 |
 
 `w8a8_dynamic` 사용 예시 — dynamic scheme은 calibration이 불필요합니다.
 
@@ -241,12 +246,12 @@ save_dir/
 | W4A16 RTN | 25.89 | +7.73 |
 | **W4A16 GPTQ** | **20.96** | **+2.80** |
 | W8A8 static | 25.01 | +6.85 |
-| **W8A8 + SmoothQuant** | **23.67** | **+5.51** |
+| W8A8 + SmoothQuant (static, 구버전) | 23.67 | +5.51 |
 | W8A8 dynamic | **18.48** | **+0.32** |
 
 **W4A16**: GPTQ(20.96) vs RTN(25.89) — Hessian 기반 오차 전파로 **-4.93 개선**. 8개 × 512 토큰 calibration.
 
-**W8A8**: SmoothQuant(23.67) vs static(25.01) — activation outlier 이관으로 **-1.34 개선**. 5 샘플 calibration.
+**W8A8**: `w8a8_smoothquant` recipe는 현재 per-token dynamic activation을 기본으로 사용합니다. 위 SmoothQuant 행은 static activation 기준 구버전 측정값입니다.
 
 > **W8A8 dynamic이 FP16에 근접한 이유**: 토큰별로 runtime scale을 계산하므로 activation outlier에 영향을 받지 않습니다.
 

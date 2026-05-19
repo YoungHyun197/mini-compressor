@@ -34,10 +34,14 @@ def _w4a16_gptq(
 def _w8a8_smoothquant(
     targets: Optional[List[str]], ignore: Optional[List[str]]
 ) -> List[BaseModifier]:
-    """SmoothQuant(α=0.5) → W8A8 RTN. activation outlier를 weight로 흡수한 뒤 양자화한다."""
+    """SmoothQuant(α=0.5) → W8A8 dynamic RTN.
+
+    activation outlier를 weight로 흡수한 뒤, per-token dynamic int8로 양자화한다.
+    dynamic activation은 런타임에 토큰별 scale을 계산하므로 calibration 불필요.
+    """
     return [
         SmoothQuantModifier(alpha=0.5),
-        QuantizationModifier(W8A8, targets=targets, ignore=ignore),
+        QuantizationModifier(W8A8_DYNAMIC, targets=targets, ignore=ignore),
     ]
 
 

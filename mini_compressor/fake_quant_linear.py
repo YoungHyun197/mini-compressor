@@ -56,15 +56,31 @@ class FakeQuantLinear(nn.Linear):
         spec = self.scheme.weight
 
         if spec.dtype == "float8":
-            # float8 (E4M3 / E5M2) fake quant 경로
-            # Intended behavior:
-            #   1. torch.float8_e4m3fn 또는 float8_e5m2 dtype으로 cast
-            #   2. scale을 곱해 원래 range로 복원 (fake quant 시뮬레이션)
-            #   3. PyTorch >= 2.1 + Hopper GPU(H100) 필요
-            # Reference: https://arxiv.org/abs/2209.05433 (FP8 Formats for Deep Learning)
+            # float8 weight fake quant 경로
+            #
+            # 입력:  w (torch.Tensor, float16/bfloat16) — FakeQuantLinear.weight
+            # 출력:  w_fq (torch.Tensor, 입력과 동일 dtype) — FP8 grid에 snap된 weight
+            #
+            # 포맷 선택:
+            #   weight/activation → torch.float8_e4m3fn (E4M3FN, max=448.0, 정밀도 우선)
+            #   gradient          → torch.float8_e5m2   (E5M2, max=57344.0, 범위 우선)
+            #   Reference: https://arxiv.org/abs/2209.05433 (FP8 Formats for Deep Learning)
+            #
+            # 의도된 동작 (granularity에 따라 scale shape이 달라짐):
+            #   FP8_MAX = 448.0  # float8_e4m3fn 최대 표현값
+            #   per_tensor:  s = w.abs().amax() / FP8_MAX
+            #   per_channel: s = w.abs().amax(dim=1) / FP8_MAX  → shape [out_features, 1]
+            #   (per_group FP8는 비표준이므로 초기 구현 대상 외)
+            #
+            #   w_fq = (w / s).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn).to(w.dtype) * s
+            #
+            # 하드웨어/소프트웨어 요건:
+            #   dtype cast 자체: PyTorch >= 2.1 (CPU/GPU 무관)
+            #   FP8 matmul 가속: NVIDIA H100 (Hopper) 또는 RTX 4000 (Ada Lovelace) 필요
+            #                    fake quant 시뮬레이션은 가속 없이도 동작
             raise NotImplementedError(
                 "float8 weight quantization is not yet implemented. "
-                "Requires PyTorch >= 2.1 and float8_e4m3fn/float8_e5m2 dtype support."
+                "Requires PyTorch >= 2.1 for float8_e4m3fn dtype support."
             )
 
         qmax = 2 ** (spec.num_bits - 1) - 1
@@ -90,9 +106,27 @@ class FakeQuantLinear(nn.Linear):
         spec = self.scheme.activation
 
         if spec.dtype == "float8":
-            # float8 activation fake quant 경로 — weight와 동일한 제약 조건 적용
+            # float8 activation fake quant 경로
+            #
+            # 입력:  x (torch.Tensor, float16/bfloat16) — forward 입력 activation
+            # 출력:  x_fq (torch.Tensor, 입력과 동일 dtype) — FP8 grid에 snap된 activation
+            #
+            # 포맷: torch.float8_e4m3fn (weight와 동일, FP8_MAX = 448.0)
+            #
+            # 의도된 동작:
+            #   dynamic=True (런타임 scale):
+            #     per_tensor:  s = x.abs().amax() / FP8_MAX
+            #     per_token:   s = x.abs().amax(dim=-1, keepdim=True) / FP8_MAX
+            #     x_fq = (x / s).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn).to(x.dtype) * s
+            #
+            #   dynamic=False (static scale, calibration에서 사전 계산):
+            #     s = self.input_scale  (calibration observer가 absmax 기반으로 산출)
+            #     x_fq = (x / s).clamp(-FP8_MAX, FP8_MAX).to(torch.float8_e4m3fn).to(x.dtype) * s
+            #
+            # 하드웨어/소프트웨어 요건: weight stub 참고 (동일)
             raise NotImplementedError(
-                "float8 activation quantization is not yet implemented."
+                "float8 activation quantization is not yet implemented. "
+                "Requires PyTorch >= 2.1 for float8_e4m3fn dtype support."
             )
 
         qmax = 2 ** (spec.num_bits - 1) - 1

@@ -637,13 +637,52 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 ---
 
-### 작업 위치 (2026-05-18 갱신)
+## 2026-05-19 — 코드 품질 개선
+
+### 37. Compressor.compress() — try/finally로 hook 잔류 버그 수정
+
+**버그**: `calibrate()` 중 예외(OOM 등) 발생 시 `finalize()`가 호출되지 않아 `SmoothQuantModifier`가 등록한 forward pre-hook이 모델에 잔류. 이후 forward 결과가 오염.
+
+**수정**: `calibrate()` 호출을 `try/finally`로 감싸 예외 시에도 `finalize()` 실행 보장.
+
+```python
+for modifier in self.modifiers:
+    modifier.initialize(model)
+    try:
+        modifier.calibrate(data, num_samples=num_samples)
+    finally:
+        modifier.finalize()
+```
+
+### 38. assert → RuntimeError 통일
+
+`QuantizationMixin.finalize()`와 `QuantizationModifier.calibrate()`의 `assert self.model is not None`을 `RuntimeError`로 교체.
+- `python -O` 플래그로 비활성화되는 assert는 lifecycle 계약 검사에 부적절.
+- `SmoothQuantModifier`(기존 `RuntimeError`)와 일관성 확보.
+- 영향 없음 — `-O` 없는 일반 실행에서 동작 동일.
+
+### 39. input_scale = None 이중 의미 명시
+
+`FakeQuantLinear`의 `input_scale = None`은 두 상황을 겸한다.
+- (a) static calibration 전: `calibrate()` 호출 후 채워짐.
+- (b) dynamic 또는 weight-only: 런타임 scale 계산이나 activation 양자화 없음.
+`forward()`가 `scheme.activation`을 먼저 체크하므로 동작은 맞다. 주석으로 명시.
+
+### 40. _find_quantization_modifier() 선택 규칙 문서화
+
+modifier list에 복수의 QuantizationMixin이 있으면 리스트 순서상 첫 번째의 scheme/ignore로 저장됨.
+현재 모든 recipe는 QuantizationMixin을 최대 하나만 포함하므로 실제 문제 없음. docstring에 명시.
+
+---
+
+### 작업 위치 (2026-05-19 갱신)
 
 - M6-B GPTQ 실구현 + PPL 측정 완료.
 - fake_quant_linear dtype 버그 수정 완료.
+- 코드 품질 개선 (hook 잔류 버그, assert → RuntimeError, 주석) 완료.
 - 단위 테스트 39개 통과.
 
 ### 다음 작업
 
 - M6-C Sequential calibration 구현 (선택).
-- AWQ 구현 또는 추가 모델 검증 (선택).
+- AWQ 구현 (선택).

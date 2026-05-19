@@ -76,7 +76,8 @@ class QuantizationMixin:
 
     def finalize(self) -> None:
         """observer 제거, scale buffer만 남김."""
-        assert self.model is not None, "initialize(model)을 먼저 호출해야 합니다."
+        if self.model is None:
+            raise RuntimeError("initialize(model)을 먼저 호출해야 합니다.")
         for mod in self.model.modules():
             if isinstance(mod, FakeQuantLinear):
                 mod.input_observer = None
@@ -124,7 +125,8 @@ class QuantizationModifier(QuantizationMixin, BaseModifier):
         if self.scheme.activation is None or self.scheme.activation.dynamic:
             return
 
-        assert self.model is not None, "initialize(model)을 먼저 호출해야 합니다."
+        if self.model is None:
+            raise RuntimeError("initialize(model)을 먼저 호출해야 합니다.")
 
         self.model.eval()
         n = 0

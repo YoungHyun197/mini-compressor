@@ -470,6 +470,10 @@ state_dict에 observer 잔여물 남기지 않음
 Furiosa compiler 입력으로 바로 사용 가능한 깔끔한 weight + scale buffer만 남김
 ```
 
+> **예외 안전성**: `Compressor.compress()`는 `calibrate()`를 `try/finally`로 감싸 예외 발생 시에도
+> `finalize()`를 반드시 호출한다. SmoothQuantModifier처럼 hook을 등록하는 modifier가 있을 때
+> OOM 등으로 calibration이 중단돼도 hook이 모델에 잔류하지 않는다.
+
 ### generate sanity check
 
 ```text

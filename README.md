@@ -337,7 +337,6 @@ pytest tests/ -v
 
 아래 기능은 인터페이스(stub)만 정의되어 있으며 호출 시 `NotImplementedError`를 발생시킵니다. 각 stub에는 입출력 타입, docstring, 의도된 동작이 명세되어 있습니다.
 
-- [ ] **GPTQ PPL 측정** — W4A16 RTN 대비 perplexity 비교 (구현 완료, 측정 대기)
 - [ ] **AWQ** (`AWQModifier`) — activation magnitude 기반 per-channel scaling으로 W4A16 정확도 향상
 - [ ] **Sequential calibration** (`QuantizationModifier.calibrate(sequential=True)`) — layer-by-layer 순차 캘리브레이션 (GPU 메모리 효율화)
 - [ ] **Float8** (`QuantizationSpec(dtype="float8")`) — E4M3/E5M2 fake quant 경로 (PyTorch >= 2.1 필요)

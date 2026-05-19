@@ -60,12 +60,15 @@ class Compressor:
         """각 modifier에 대해 initialize → calibrate → finalize를 순차 실행한다.
 
         modifier 사이에 calibration 데이터가 공유되므로 dataloader는 한 번만 전달한다.
+        calibrate() 도중 예외가 발생해도 finalize()를 반드시 호출해 hook 등 임시 상태를 정리한다.
         """
         data = list(dataloader) if dataloader is not None else []
         for modifier in self.modifiers:
             modifier.initialize(model)
-            modifier.calibrate(data, num_samples=num_samples)
-            modifier.finalize()
+            try:
+                modifier.calibrate(data, num_samples=num_samples)
+            finally:
+                modifier.finalize()
         return model
 
     def save(
@@ -120,6 +123,11 @@ class Compressor:
         )
 
     def _find_quantization_modifier(self) -> QuantizationMixin:
+        """modifier list에서 첫 번째 QuantizationMixin 인스턴스를 반환한다.
+
+        복수의 QuantizationMixin이 있으면 list 순서상 첫 번째의 scheme/ignore로 저장된다.
+        현재 recipe는 QuantizationMixin을 최대 하나만 포함하므로 이 동작이 항상 의도와 일치한다.
+        """
         for m in self.modifiers:
             if isinstance(m, QuantizationMixin):
                 return m

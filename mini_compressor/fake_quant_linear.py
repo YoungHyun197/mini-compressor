@@ -18,6 +18,10 @@ class FakeQuantLinear(nn.Linear):
         self.scheme = scheme
         self.register_buffer("weight_scale", None)
         self.register_buffer("weight_zero_point", None)
+        # input_scale = None은 두 가지를 의미한다:
+        #   (a) static calibration 전 — calibrate() 호출 후 채워짐
+        #   (b) dynamic 또는 weight-only — 런타임 scale 계산이나 activation 양자화 없음
+        # forward()는 scheme.activation을 먼저 확인하므로 (a)/(b) 구분 없이 동작이 맞다.
         self.register_buffer("input_scale", None)
         self.register_buffer("input_zero_point", None)
 

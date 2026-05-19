@@ -398,6 +398,21 @@ demo.py 작성
 
 ---
 
+## 2026-05-19 — 코드 품질 개선 (버그 수정 + 주석)
+
+- **`Compressor.compress()` hook 잔류 버그 수정**: `calibrate()` 예외 발생 시 `finalize()`가 호출되지 않아
+  `SmoothQuantModifier`의 forward hook이 모델에 잔류하는 버그. `try/finally`로 감싸 예외 시에도
+  `finalize()` 실행 보장.
+- **`assert` → `RuntimeError` 통일**: `QuantizationMixin.finalize()`와 `QuantizationModifier.calibrate()`의
+  `assert self.model is not None`을 `RuntimeError`로 교체. `python -O` 플래그로 비활성화되는
+  `assert`는 API 계약으로 부적절. `SmoothQuantModifier`(기존 `RuntimeError`)와 일관성 확보.
+- **`FakeQuantLinear.input_scale = None` 이중 의미 주석**: (a) static calibration 전, (b) dynamic·weight-only.
+  `forward()`가 `scheme.activation` 먼저 체크해 동작은 맞지만 가독성 개선 목적.
+- **`_find_quantization_modifier()` docstring 보완**: "첫 번째 QuantizationMixin 선택" 규칙과 복수 인스턴스 시
+  동작을 명시.
+
+---
+
 ## 2026-05-18 — fake_quant_linear dtype 일관성 버그 수정
 
 - **버그**: `weight_scale`/`input_scale`이 float32로 저장되어 float16 weight/activation과
@@ -426,10 +441,11 @@ demo.py 작성
 
 > **Milestone 1–13 + M6-D 완료** (SmoothQuant + Recipe preset + M13 Multi-GPU observer sync + M6-D 멀티모델 검증)
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
+> 2026-05-19: 코드 품질 개선 (hook 잔류 버그 수정, assert → RuntimeError, 주석 보완).
 
 **다음 할 일.**
 1. Milestone 6-C Sequential Calibration 구현 (메모리 효율 calibration)
-2. AWQ 구현 또는 M6-D 추가 모델 검증 (선택)
+2. AWQ 구현 (선택)
 
 ---
 

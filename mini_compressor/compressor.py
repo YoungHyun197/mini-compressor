@@ -94,7 +94,7 @@ class Compressor:
         tokenizer=None,
         private: bool = True,
         commit_message: str = "Upload quantized model",
-    ) -> None:
+    ) -> str:
         """compress 완료 후 HuggingFace Hub에 업로드한다.
 
         Args:
@@ -104,23 +104,38 @@ class Compressor:
             private: True이면 private 저장소로 생성. 기본값 True.
             commit_message: Hub commit 메시지.
 
-        Intended behavior:
-            1. 임시 디렉토리에 save() 호출 (safetensors + quantization_config.json).
-            2. huggingface_hub.HfApi().upload_folder()로 임시 디렉토리 전체를 업로드한다.
-            3. 임시 디렉토리를 정리한다.
-            모델 파일 구조가 이미 HF 호환이므로 upload_folder 한 번으로 완료된다.
+        Returns:
+            업로드된 HuggingFace Hub URL.
 
         Note:
             huggingface_hub 패키지와 HF_TOKEN 환경변수 또는 `huggingface-cli login` 필요.
 
         Usage:
-            compressor.save_to_hub(model, "username/qwen3-w4a16", tokenizer=tokenizer)
+            url = compressor.save_to_hub(model, "username/qwen3-w4a16", tokenizer=tokenizer)
         """
-        raise NotImplementedError(
-            "save_to_hub is not yet implemented. "
-            "Use save(model, save_dir) to save locally, then upload manually with "
-            "huggingface_hub.upload_folder(repo_id=..., folder_path=save_dir)."
-        )
+        try:
+            from huggingface_hub import HfApi
+        except ImportError as e:
+            raise ImportError(
+                "save_to_hub()에는 huggingface_hub 패키지가 필요합니다. "
+                "pip install huggingface_hub 로 설치하세요."
+            ) from e
+
+        import tempfile
+
+        api = HfApi()
+        api.create_repo(repo_id=repo_id, private=private, exist_ok=True)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            self.save(model, tmpdir, tokenizer=tokenizer)
+            _write_model_card(tmpdir, model, repo_id, self._find_quantization_modifier())
+            commit_info = api.upload_folder(
+                repo_id=repo_id,
+                folder_path=tmpdir,
+                commit_message=commit_message,
+            )
+
+        return commit_info.commit_url
 
     def _find_quantization_modifier(self) -> QuantizationMixin:
         """modifier list에서 첫 번째 QuantizationMixin 인스턴스를 반환한다.
@@ -135,3 +150,78 @@ class Compressor:
             "save()는 modifier list에 QuantizationModifier 또는 GPTQModifier가 포함되어 있을 때만 호출 가능합니다. "
             f"현재 modifier 종류: {[type(m).__name__ for m in self.modifiers]}"
         )
+
+
+def _write_model_card(
+    save_dir: str,
+    model: nn.Module,
+    repo_id: str,
+    quant_mod: QuantizationMixin,
+) -> None:
+    """HuggingFace Hub용 README.md(모델 카드)를 save_dir에 생성한다."""
+    import os
+
+    scheme = quant_mod.scheme
+    base_model = getattr(getattr(model, "config", None), "_name_or_path", "unknown")
+    w_bits = scheme.weight.num_bits
+    a_bits = scheme.activation.num_bits if scheme.activation else "fp16"
+    w_gran = scheme.weight.granularity.replace("per_", "per-")
+    recipe_name = scheme.name
+
+    ignore_note = ""
+    if quant_mod.ignore:
+        ignore_note = f"\n- **ignore**: `{quant_mod.ignore}`"
+
+    modifier_names = [type(m).__name__ for m in getattr(quant_mod, "_pipeline", [])]
+
+    card = f"""---
+base_model: {base_model}
+library_name: mini-compressor
+tags:
+  - quantization
+  - compressed-tensors
+  - mini-compressor
+---
+
+# {repo_id.split("/")[-1]}
+
+Post-training quantization of [{base_model}](https://huggingface.co/{base_model}) using [mini-compressor](https://github.com/your-username/mini-compressor).
+
+## Quantization Details
+
+| Property | Value |
+|----------|-------|
+| Recipe | `{recipe_name}` |
+| Weight bits | W{w_bits} ({w_gran}) |
+| Activation bits | A{a_bits} |
+| Format | compressed-tensors (fake-quantized) |
+| Status | calibrated |{ignore_note}
+
+## Usage
+
+```python
+from mini_compressor import load_pretrained
+
+model = load_pretrained("{repo_id}")
+```
+
+Or with the full pipeline:
+
+```python
+from mini_compressor import Compressor
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("{base_model}")
+model = Compressor.from_recipe("{recipe_name}").compress(
+    model, dataloader=calibration_data
+)
+```
+
+## Notes
+
+This model uses **fake quantization** (float16 weights + quantization error simulation).
+Actual INT{w_bits} packing and kernel dispatch require a compatible runtime (e.g., vLLM with compressed-tensors support).
+"""
+
+    with open(os.path.join(save_dir, "README.md"), "w") as f:
+        f.write(card)

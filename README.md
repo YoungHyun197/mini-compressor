@@ -149,6 +149,24 @@ model = load_pretrained("./qwen3-w8a8")
 
 원본 모델이 HuggingFace cache에 있거나 네트워크 접근이 가능해야 합니다.
 
+### HuggingFace Hub 업로드
+
+```bash
+pip install "mini-compressor[hub]"
+```
+
+```python
+url = compressor.save_to_hub(
+    model,
+    "your-username/qwen3-0.6b-w4a16",
+    tokenizer=tokenizer,
+    private=True,
+)
+print(url)  # https://huggingface.co/.../commit/...
+```
+
+모델 카드(README.md)가 자동 생성됩니다. `HF_TOKEN` 환경변수 또는 `huggingface-cli login`이 필요합니다.
+
 ---
 
 ## 지원 Recipe
@@ -411,7 +429,7 @@ pytest tests/ -v
 | Real INT packing | 미구현. fake quant only |
 | 실제 latency / memory benchmark | 미측정 |
 | Float8 execution | 의도된 동작을 명세한 stub |
-| Hub upload helper | stub |
+| Hub upload helper | 구현 완료 (`save_to_hub`, `pip install mini-compressor[hub]`) |
 | Tensor Parallelism | 범위 외 |
 | 실제 2-GPU `device_map="auto"` 실행 | 하드웨어 한계로 미측정 |
 

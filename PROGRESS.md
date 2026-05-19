@@ -407,7 +407,7 @@ demo.py 작성
 | Sequential calibration | **구현 완료** | `calibrate(sequential=True)` — layer별 GPU offload, model.model.layers 구조 지원 |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
 | Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
-| HuggingFace Hub 업로드 | stub 있음 | `Compressor.save_to_hub()` — NotImplementedError |
+| HuggingFace Hub 업로드 | **구현 완료** | `Compressor.save_to_hub()` — 모델 카드 자동 생성 + `HfApi.upload_folder` |
 | Multi-model 검증 | **완료** | TinyLlama-1.1B (LLaMA 아키텍처) — 라이브러리 코드 수정 없이 4 recipe 동작 |
 
 ---
@@ -457,7 +457,7 @@ demo.py 작성
 > M13 중 Tensor Parallelism(13-3)·실 2-GPU 실측은 범위 외 / 하드웨어 한계.
 
 **다음 할 일.**
-1. Float8 / save_to_hub stub → 실구현 (선택)
+1. Float8 stub → 실구현 (선택)
 
 ---
 
@@ -490,7 +490,7 @@ demo.py 작성
 | 가점 항목 | 상태 | 비고 |
 |-----------|------|------|
 | serialization 포맷 설계 (quantization config 등) | **완료** | compressed-tensors 포맷 호환 `quantization_config.json`, `save_pretrained`/`load_pretrained` 구현 |
-| HuggingFace Hub model card upload 가능한 구조 | **부분 완료** | 파일 구조는 HF 호환 (safetensors + config.json). model card(README) 생성 유틸리티 미구현 |
+| HuggingFace Hub model card upload 가능한 구조 | **완료** | `save_to_hub(model, repo_id)` — model card 자동 생성 + `HfApi.upload_folder`. `pip install mini-compressor[hub]`로 선택 의존성 설치 |
 | Multi-GPU 고려 | **완료** | M13 — observer `sync()` 4종 (all_reduce / all_gather), gloo 2-proc 검증 |
 
 ---

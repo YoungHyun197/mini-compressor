@@ -19,7 +19,7 @@ mini_compressor/
     gptq.py              — GPTQModifier (실구현 — Hessian 기반 W4A16 weight 최적화)
     awq.py               — AWQModifier (실구현 — activation magnitude grid-search W4A16)
   recipes.py             — RECIPE_REGISTRY (preset 이름 → modifier 파이프라인 factory)
-  compressor.py          — Compressor (modifier list 수용, from_recipe/compress/save, save_to_hub stub)
+  compressor.py          — Compressor (modifier list 수용, from_recipe/compress/save, save_to_hub 실구현)
   serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
 
 demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-to-end 데모 (--model, --save, --ppl 옵션)
@@ -168,7 +168,9 @@ M6은 SmoothQuant(6-A) / GPTQ(6-B) 확장 milestone으로 재정의. RTN 관련 
 ## 미완료 / 다음 할 일
 
 - [x] M6-B: GPTQ — 실구현 완료 + Qwen3-0.6B PPL 측정 완료 (W4A16 GPTQ 20.96 vs RTN 25.89)
-- [ ] M6-C: Sequential calibration / Float8 / save_to_hub — stub만 존재
+- [x] M6-C: Sequential calibration — 완료
+- [x] save_to_hub — 실구현 완료 (모델 카드 자동 생성 + HfApi.upload_folder)
+- [ ] Float8 — stub만 존재
 
 ---
 
@@ -428,7 +430,7 @@ if not model_id:
 | `GPTQModifier` | modifiers/gptq.py | ✅ 구현 완료 | Hessian 기반 W4A16. W4A16 RTN 25.89 → 20.96 (-4.93) |
 | `AWQModifier` | modifiers/awq.py | ✅ 구현 완료 (POC) | activation magnitude grid-search W4A16 |
 | `BaseObserver.sync()` | observer.py | ✅ 구현 완료 | MinMax: all_reduce. Percentile/MSE: all_gather_object |
-| `save_to_hub()` | compressor.py | stub | HF Hub 업로드. 파일 구조가 이미 HF 호환 |
+| `save_to_hub()` | compressor.py | ✅ 구현 완료 | HF Hub 업로드. 모델 카드 자동 생성 + `HfApi.upload_folder`. `pip install mini-compressor[hub]` |
 | float8 경로 | fake_quant_linear.py | stub | `spec.dtype == "float8"` 시 NotImplementedError |
 
 stub 항목은 입출력 타입, 의도된 동작, 참고 논문을 docstring에 명세함.
@@ -776,7 +778,29 @@ layer별 원래 device는 `layer_devices`에 기록해 복귀. scale buffer도 `
 
 ### 다음 작업
 
-- Float8 / save_to_hub stub → 실구현 (선택).
+- Float8 stub → 실구현 (선택).
+
+---
+
+## 2026-05-20 — save_to_hub 실구현
+
+### 40. `Compressor.save_to_hub()` — HuggingFace Hub 업로드
+
+**구현 내용**:
+- `compressor.py`: `save_to_hub(model, repo_id, tokenizer, private, commit_message)` → `str` (commit URL 반환)
+- 흐름: 임시 디렉토리 → `save()` (safetensors + quantization_config.json) → `_write_model_card()` → `HfApi.upload_folder()` → 임시 디렉토리 정리
+- `huggingface_hub` lazy import — 미설치 시 `ImportError` + 설치 안내 메시지.
+- `pyproject.toml`에 `[project.optional-dependencies] hub = ["huggingface_hub>=0.20"]` 추가.
+
+**모델 카드 (`_write_model_card`)**:
+- HF YAML frontmatter (`base_model`, `library_name`, `tags`) 자동 생성.
+- Quantization Details 표: recipe, weight bits, activation bits, format, status, ignore.
+- Usage 코드 블록: `load_pretrained(repo_id)` + `Compressor.from_recipe()` 파이프라인.
+
+**테스트 (`tests/test_hub.py`)**:
+- `unittest.mock.patch("huggingface_hub.HfApi")` — lazy import이므로 모듈 내가 아닌 원본 패키지 경로로 patch.
+- `create_repo` 호출 검증, `private=False` 옵션, 업로드 파일 목록(3개), 모델 카드 내용, ImportError 경로.
+- 5개 테스트 통과.
 
 ---
 

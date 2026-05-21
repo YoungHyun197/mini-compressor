@@ -197,7 +197,7 @@ def main():
     torch.cuda.empty_cache()
 
     # ── 6. W8A8 + SmoothQuant ─────────────────────────────────────────────────
-    print("\n[6/6] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 static")
+    print("\n[6/6] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 dynamic")
     model_sq = load_model(args.model)
     Compressor.from_recipe(
         "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]

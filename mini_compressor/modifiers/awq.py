@@ -1,6 +1,7 @@
 # AWQModifier — activation magnitude 기반 grid-search scaling으로 W4A16 정확도 향상
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Iterable, List, Optional, Tuple
 
 import torch
@@ -82,7 +83,7 @@ class AWQModifier(BaseModifier):
             for batch in dataloader:
                 if limit is not None and n >= limit:
                     break
-                if isinstance(batch, dict):
+                if isinstance(batch, (dict, Mapping)):
                     self.model(**batch)
                 elif isinstance(batch, (list, tuple)):
                     self.model(*batch)

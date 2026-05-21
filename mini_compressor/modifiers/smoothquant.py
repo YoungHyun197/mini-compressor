@@ -1,6 +1,7 @@
 # SmoothQuantModifier — activation 분포를 weight 쪽으로 이관하여 양자화 오차 감소
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Iterable, List, Optional, Tuple
 
 import torch
@@ -73,7 +74,7 @@ class SmoothQuantModifier(BaseModifier):
             for batch in dataloader:
                 if limit is not None and n >= limit:
                     break
-                if isinstance(batch, dict):
+                if isinstance(batch, (dict, Mapping)):
                     self.model(**batch)
                 elif isinstance(batch, (list, tuple)):
                     self.model(*batch)

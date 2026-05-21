@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import fnmatch
+from collections.abc import Mapping
 from typing import Iterable, List, Optional
 
 import torch
@@ -138,7 +139,7 @@ class QuantizationModifier(QuantizationMixin, BaseModifier):
             for batch in dataloader:
                 if num_samples is not None and n >= num_samples:
                     break
-                if isinstance(batch, dict):
+                if isinstance(batch, (dict, Mapping)):
                     self.model(**batch)
                 elif isinstance(batch, (list, tuple)):
                     self.model(*batch)

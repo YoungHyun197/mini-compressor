@@ -121,7 +121,7 @@ Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)]) chain 동작
 - [x] 동등성 단위 테스트 3개 추가 (`tests/test_smoothquant.py`)
 - [x] `demo.py`에 W8A8+SmoothQuant 옵션 추가
 - [x] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`)
-  - W8A8 static 25.01 → W8A8 + SmoothQuant 23.67 (-1.34 개선, 5 샘플 calibration)
+  - W8A8 static 25.01 → W8A8 + SmoothQuant (dynamic) 21.08 (-3.93 개선)
   - refactor 회귀 확인 — W4A16/FP16/dynamic 기존 측정값과 일치
 
 ### Milestone 6-A 후속 — Recipe preset 레이어 ✅ 완료
@@ -321,7 +321,7 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 - [x] W4A16 RTN perplexity 측정 — 25.89 (+7.73)
 - [x] W8A8 static perplexity 측정 — 25.01 (+6.85) _(dtype 버그 수정 후 재측정)_
 - [x] W8A8 dynamic perplexity 측정 — 18.48 (+0.32)
-- [x] W8A8 + SmoothQuant perplexity 측정 — 23.67 (+5.51) _(dtype 버그 수정 후 재측정)_
+- [x] W8A8 + SmoothQuant perplexity 측정 — 21.08 (+2.92) _(recipe W8A8_DYNAMIC 변경 후 재측정)_
 - [x] W4A16 GPTQ perplexity 측정 — 20.96 (+2.80) ← RTN 25.89 대비 -4.93 개선
 - [x] 비교 표 README에 추가
 

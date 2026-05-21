@@ -361,11 +361,11 @@ save_dir/
 | W4A16 RTN | 25.89 | +7.73 |
 | **W4A16 GPTQ** | **20.96** | **+2.80** |
 | W8A8 static | 25.01 | +6.85 |
-| W8A8 + SmoothQuant (static activation 기준) | 23.67 | +5.51 |
+| W8A8 + SmoothQuant | 21.08 | +2.92 |
 | **W8A8 dynamic** | **18.48** | **+0.32** |
 
 - **W8A8 dynamic**이 FP16에 근접하는 이유: 토큰별 runtime scale을 계산하므로 activation outlier의 영향을 받지 않습니다.
-- **SmoothQuant** 행은 static activation 조합 기준 측정값입니다. 현재 `w8a8_smoothquant` recipe는 per-token dynamic activation을 기본으로 사용합니다.
+- **SmoothQuant** (`w8a8_smoothquant`)는 weight smoothing + per-token dynamic activation 조합입니다. W8A8 static 대비 -3.93 개선됩니다.
 - **GPTQ**는 Hessian 기반 오차 전파로 W4A16 RTN 대비 -4.93 개선됩니다.
 
 ### Round-trip 일치 확인 (Qwen3-0.6B)

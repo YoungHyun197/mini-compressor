@@ -518,12 +518,12 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 | W4A16 RTN | 25.89 | +7.73 | |
 | W4A16 GPTQ | **20.96** | **+2.80** | wikitext-2 train 8×512 tok calibration |
 | W8A8 static | 25.01 | +6.85 | demo 5 샘플 calibration |
-| W8A8 + SmoothQuant | 23.67 | +5.51 | demo 5 샘플 calibration |
+| W8A8 + SmoothQuant | 21.08 | +2.92 | W8A8_DYNAMIC recipe 기준 재측정 |
 | W8A8 dynamic | 18.48 | +0.32 | calibration 불필요 |
 
 **GPTQ 효과**: W4A16 RTN 25.89 → GPTQ 20.96. **-4.93 개선**. Hessian 기반 오차 전파의 효과.
 
-**SmoothQuant 효과**: W8A8 static 25.01 → SmoothQuant 23.67. **-1.34 개선**. per-tensor static 한계 안에서 activation outlier를 weight로 이관한 차이.
+**SmoothQuant 효과**: W8A8 static 25.01 → SmoothQuant (dynamic) 21.08. **-3.93 개선**. weight smoothing + per-token dynamic activation 조합. recipe를 W8A8_DYNAMIC으로 변경 후 재측정한 수치.
 
 ---
 
@@ -634,7 +634,7 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - dynamic activation은 scale을 float16 input에서 직접 계산하므로 이미 float16 → 동작 불변.
 - W4A16 RTN도 비슷한 경로를 거치지만 실측값(25.89) 불변 — 이미 CUDA에서 동일 정밀도로 처리되고 있었음.
 
-**PPL 변화**: W8A8 static 27.75 → 25.01, SmoothQuant 19.28 → 23.67. 새 값이 float16 추론 시뮬레이션으로 더 정확.
+**PPL 변화**: W8A8 static 27.75 → 25.01. SmoothQuant는 이후 recipe를 W8A8_DYNAMIC으로 변경하여 21.08로 재측정됨 (float16 수정 직후 측정값 23.67은 static 기준).
 
 ---
 

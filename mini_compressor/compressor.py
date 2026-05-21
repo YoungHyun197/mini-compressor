@@ -133,7 +133,7 @@ class Compressor:
 
         with tempfile.TemporaryDirectory() as tmpdir:
             self.save(model, tmpdir, tokenizer=tokenizer)
-            _write_model_card(tmpdir, model, repo_id, self._find_quantization_modifier())
+            _write_model_card(tmpdir, model, repo_id, self._find_quantization_modifier(), self.recipe_name)
             commit_info = api.upload_folder(
                 repo_id=repo_id,
                 folder_path=tmpdir,
@@ -179,6 +179,7 @@ def _write_model_card(
     model: nn.Module,
     repo_id: str,
     quant_mod: QuantizationMixin,
+    recipe_name: Optional[str] = None,
 ) -> None:
     """HuggingFace Hub용 README.md(모델 카드)를 save_dir에 생성한다."""
     import os
@@ -188,7 +189,7 @@ def _write_model_card(
     w_bits = scheme.weight.num_bits
     a_bits = scheme.activation.num_bits if scheme.activation else "fp16"
     w_gran = scheme.weight.granularity.replace("per_", "per-")
-    recipe_name = scheme.name
+    recipe_name = recipe_name or scheme.name
 
     ignore_note = ""
     if quant_mod.ignore:

@@ -82,10 +82,6 @@ class GPTQModifier(QuantizationMixin, BaseModifier):
 
         dataloader = list(dataloader)
         try:
-            if not dataloader:
-                raise ValueError(
-                    "GPTQModifier는 calibration 데이터가 필요합니다 (dataloader가 비어 있습니다)."
-                )
             self.model.eval()
             n = 0
             with torch.no_grad():
@@ -99,6 +95,12 @@ class GPTQModifier(QuantizationMixin, BaseModifier):
                     else:
                         self.model(batch)
                     n += 1
+
+            if n == 0:
+                raise ValueError(
+                    "GPTQModifier는 calibration 데이터가 필요합니다. "
+                    "dataloader가 비어있거나 num_samples=0입니다."
+                )
         finally:
             for h in handles:
                 h.remove()

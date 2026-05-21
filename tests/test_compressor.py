@@ -94,6 +94,46 @@ def test_from_recipe_unknown_raises():
         Compressor.from_recipe("nonexistent")
 
 
+def test_save_before_compress_raises():
+    """compress() 없이 save()를 호출하면 ValueError가 발생해야 한다."""
+    model = _TinyLM()
+    compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
+    with tempfile.TemporaryDirectory() as tmpdir:
+        with pytest.raises(ValueError, match="compress"):
+            compressor.save(model, tmpdir)
+
+
+def test_w8a8_no_dataloader_raises():
+    """Static activation scheme에 dataloader 없이 compress하면 ValueError가 발생해야 한다."""
+    model = _TinyLM()
+    compressor = Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"])
+    with pytest.raises(ValueError, match="calibration"):
+        compressor.compress(model)  # dataloader 없이 호출
+
+
+def test_compress_twice_idempotent():
+    """compress()를 두 번 호출해도 FakeQuantLinear가 중첩 교체되지 않아야 한다."""
+    model = _TinyLM()
+    compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
+    compressor.compress(model)
+    first_proj = model.proj
+    compressor.compress(model)  # 두 번째 호출
+    assert model.proj is first_proj, "두 번째 compress에서 proj 레이어가 재교체됨"
+
+
+def test_save_recipe_name_in_config():
+    """from_recipe로 생성한 Compressor의 save()는 quantization_config.json에 recipe를 기록해야 한다."""
+    import json
+    model = _TinyLM()
+    compressor = Compressor.from_recipe("w4a16", targets=["Linear"], ignore=["lm_head"])
+    compressor.compress(model)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        compressor.save(model, tmpdir)
+        with open(os.path.join(tmpdir, "quantization_config.json")) as f:
+            config = json.load(f)
+    assert config.get("recipe") == "w4a16"
+
+
 def test_from_recipe_w8a8_smoothquant_builds_modifier_chain():
     """from_recipe가 [SmoothQuantModifier, QuantizationModifier] chain으로 펼쳐져야 한다."""
     compressor = Compressor.from_recipe(

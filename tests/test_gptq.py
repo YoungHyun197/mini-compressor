@@ -97,3 +97,24 @@ def test_gptq_mse_leq_rtn():
 
     assert mse_gptq < mse_rtn, \
         f"GPTQ MSE {mse_gptq:.6f} >= RTN MSE {mse_rtn:.6f}"
+
+
+def test_gptq_empty_dataloader_raises():
+    """빈 dataloader로 calibrate를 호출하면 ValueError가 발생해야 한다."""
+    import pytest
+    model = _make_model()
+    gptq = GPTQModifier(W4A16)
+    gptq.initialize(model)
+    with pytest.raises(ValueError, match="비어있거나"):
+        gptq.calibrate([])  # empty dataloader
+
+
+def test_gptq_num_samples_zero_raises():
+    """num_samples=0으로 calibrate를 호출하면 ValueError가 발생해야 한다."""
+    import pytest
+    model = _make_model()
+    gptq = GPTQModifier(W4A16)
+    x = torch.randn(8, 128)
+    gptq.initialize(model)
+    with pytest.raises(ValueError, match="비어있거나"):
+        gptq.calibrate([(x,)], num_samples=0)

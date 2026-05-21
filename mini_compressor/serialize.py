@@ -53,6 +53,7 @@ def _spec_from_dict(d: dict) -> QuantizationSpec:
 def _scheme_to_dict(
     scheme: QuantizationScheme,
     ignore: Optional[List[str]] = None,
+    recipe_name: Optional[str] = None,
 ) -> dict:
     group: dict = {
         "weights": _spec_to_dict(scheme.weight),
@@ -61,11 +62,14 @@ def _scheme_to_dict(
     }
     if ignore:
         group["ignore"] = ignore
-    return {
+    d: dict = {
         "quant_type": "compressed-tensors",
         "quantization_status": "calibrated",
         "config_groups": {"group_0": group},
     }
+    if recipe_name:
+        d["recipe"] = recipe_name
+    return d
 
 
 def _scheme_from_dict(d: dict) -> tuple[QuantizationScheme, Optional[List[str]]]:
@@ -96,6 +100,7 @@ def save_pretrained(
     scheme: QuantizationScheme,
     ignore: Optional[List[str]] = None,
     tokenizer: Optional[PreTrainedTokenizerBase] = None,
+    recipe_name: Optional[str] = None,
 ) -> None:
     """모델 + quantization_config.json 저장. tokenizer 있으면 함께 저장."""
     Path(save_dir).mkdir(parents=True, exist_ok=True)
@@ -106,7 +111,7 @@ def save_pretrained(
 
         model.save_pretrained(save_dir)
 
-        config_dict = _scheme_to_dict(scheme, ignore=ignore)
+        config_dict = _scheme_to_dict(scheme, ignore=ignore, recipe_name=recipe_name)
         if model_id:
             config_dict["base_model_name_or_path"] = model_id
         config_path = os.path.join(save_dir, QUANT_CONFIG_FILENAME)

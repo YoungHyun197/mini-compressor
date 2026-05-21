@@ -5,8 +5,10 @@ from typing import Iterable, List, Optional
 
 import torch.nn as nn
 
+from .fake_quant_linear import FakeQuantLinear
 from .modifiers import BaseModifier, QuantizationMixin, QuantizationModifier
 from .recipes import RECIPE_REGISTRY
+from .schemes import QuantizationScheme
 from .serialize import save_pretrained
 
 
@@ -28,10 +30,11 @@ class Compressor:
         compressor.save(model, "./out", tokenizer=tokenizer)
     """
 
-    def __init__(self, modifiers: List[BaseModifier]):
+    def __init__(self, modifiers: List[BaseModifier], recipe_name: Optional[str] = None):
         if not modifiers:
             raise ValueError("modifiers는 최소 1개 이상이어야 합니다.")
         self.modifiers = modifiers
+        self.recipe_name = recipe_name
 
     @classmethod
     def from_recipe(
@@ -49,7 +52,7 @@ class Compressor:
         """
         if name not in RECIPE_REGISTRY:
             raise ValueError(f"Unknown recipe '{name}'. Available: {list(RECIPE_REGISTRY)}")
-        return cls(RECIPE_REGISTRY[name](targets, ignore))
+        return cls(RECIPE_REGISTRY[name](targets, ignore), recipe_name=name)
 
     def compress(
         self,
@@ -79,12 +82,14 @@ class Compressor:
     ) -> None:
         """modifier list에서 QuantizationModifier를 찾아 그 scheme/ignore로 저장한다."""
         quant_mod = self._find_quantization_modifier()
+        _validate_compressed(model, quant_mod.scheme)
         save_pretrained(
             model,
             save_dir,
             scheme=quant_mod.scheme,
             ignore=quant_mod.ignore,
             tokenizer=tokenizer,
+            recipe_name=self.recipe_name,
         )
 
     def save_to_hub(
@@ -150,6 +155,23 @@ class Compressor:
             "save()는 modifier list에 QuantizationModifier 또는 GPTQModifier가 포함되어 있을 때만 호출 가능합니다. "
             f"현재 modifier 종류: {[type(m).__name__ for m in self.modifiers]}"
         )
+
+
+def _validate_compressed(model: nn.Module, scheme: QuantizationScheme) -> None:
+    """compress() 없이 save()를 호출한 경우를 감지해 ValueError를 발생시킨다."""
+    fql_modules = [m for m in model.modules() if isinstance(m, FakeQuantLinear)]
+    if not fql_modules:
+        raise ValueError(
+            "save()를 호출하기 전에 compress()를 먼저 호출해야 합니다. "
+            "모델에 FakeQuantLinear가 없습니다."
+        )
+    if scheme.activation is not None and not scheme.activation.dynamic:
+        missing = [m for m in fql_modules if m.input_scale is None]
+        if missing:
+            raise ValueError(
+                f"Static activation scheme이지만 {len(missing)}개 레이어의 input_scale이 None입니다. "
+                "calibration dataloader를 전달하지 않았거나 calibration이 완료되지 않았습니다."
+            )
 
 
 def _write_model_card(

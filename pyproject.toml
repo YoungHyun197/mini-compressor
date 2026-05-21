@@ -19,3 +19,6 @@ hub = ["huggingface_hub>=0.20"]
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["mini_compressor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

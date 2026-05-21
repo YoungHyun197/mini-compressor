@@ -36,6 +36,8 @@ class QuantizationMixin:
         self.model: Optional[nn.Module] = None
 
     def _should_replace(self, name: str, module: nn.Module) -> bool:
+        if isinstance(module, FakeQuantLinear):
+            return False
         if not isinstance(module, nn.Linear):
             return False
         class_name = type(module).__name__
@@ -147,6 +149,12 @@ class QuantizationModifier(QuantizationMixin, BaseModifier):
                     self.model(batch)
                 n += 1
 
+        if n == 0:
+            raise ValueError(
+                f"{type(self).__name__}: static activation scheme은 calibration 데이터가 필요합니다. "
+                "dataloader가 비어있거나 전달되지 않았습니다."
+            )
+
         for mod in self.model.modules():
             if isinstance(mod, FakeQuantLinear) and mod.input_observer is not None:
                 mod.input_observer.sync()  # multi-GPU: rank 간 통계 동기화 (단일 GPU에선 no-op)
@@ -234,19 +242,21 @@ class QuantizationModifier(QuantizationMixin, BaseModifier):
             raise _Abort()
 
         layers[0].forward = _capture_fwd
-        self.model.eval()
-        with torch.no_grad():
-            for batch in batches:
-                try:
-                    if isinstance(batch, dict):
-                        self.model(**batch)
-                    elif isinstance(batch, (list, tuple)):
-                        self.model(*batch)
-                    else:
-                        self.model(batch)
-                except _Abort:
-                    pass
-        layers[0].forward = orig_fwd
+        try:
+            self.model.eval()
+            with torch.no_grad():
+                for batch in batches:
+                    try:
+                        if isinstance(batch, (dict, Mapping)):
+                            self.model(**batch)
+                        elif isinstance(batch, (list, tuple)):
+                            self.model(*batch)
+                        else:
+                            self.model(batch)
+                    except _Abort:
+                        pass
+        finally:
+            layers[0].forward = orig_fwd
 
         if len(captured) != len(batches):
             raise RuntimeError(

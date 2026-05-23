@@ -25,6 +25,7 @@ def test_scheme_to_dict_w8a8():
     group = d["config_groups"]["group_0"]
     assert group["weights"]["strategy"] == "channel"
     assert group["weights"]["num_bits"] == 8
+    assert group["weights"]["axis"] == 0
     assert group["input_activations"]["strategy"] == "tensor"
     assert group["input_activations"]["symmetric"] is False
     assert group["targets"] == ["Linear"]
@@ -36,6 +37,7 @@ def test_scheme_to_dict_w4a16():
     group = d["config_groups"]["group_0"]
     assert group["weights"]["strategy"] == "group"
     assert group["weights"]["num_bits"] == 4
+    assert group["weights"]["axis"] == 1
     assert group["input_activations"] is None
     assert "ignore" not in group
 

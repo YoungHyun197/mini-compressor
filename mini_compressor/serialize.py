@@ -35,6 +35,8 @@ def _spec_to_dict(spec: QuantizationSpec) -> dict:
     }
     if spec.group_size is not None:
         d["group_size"] = spec.group_size
+    if spec.axis is not None:
+        d["axis"] = spec.axis
     return d
 
 
@@ -46,6 +48,7 @@ def _spec_from_dict(d: dict) -> QuantizationSpec:
         symmetric=d["symmetric"],
         granularity=granularity,
         group_size=d.get("group_size"),
+        axis=d.get("axis"),
         dynamic=d.get("dynamic", False),
     )
 

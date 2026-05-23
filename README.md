@@ -353,19 +353,19 @@ save_dir/
 
 ### Perplexity (wikitext-2-raw-v1, Qwen3-0.6B)
 
-측정: sliding-window, stride 512, max length 2048
+측정: sliding-window, stride 512, max length 2048 / calibration: wikitext-2 128 samples
 
 | Scheme | PPL | Δ vs FP16 |
 |--------|----:|----------:|
 | FP16 baseline | 18.16 | — |
 | W4A16 RTN | 25.89 | +7.73 |
 | **W4A16 GPTQ** | **20.96** | **+2.80** |
-| W8A8 static | 25.01 | +6.85 |
-| W8A8 + SmoothQuant | 21.08 | +2.92 |
-| **W8A8 dynamic** | **18.48** | **+0.32** |
+| W8A8 static | 29.71 | +11.55 |
+| W8A8 dynamic | 18.48 | +0.32 |
+| **W8A8 + SmoothQuant** | **18.33** | **+0.17** |
 
-- **W8A8 dynamic**이 FP16에 근접하는 이유: 토큰별 runtime scale을 계산하므로 activation outlier의 영향을 받지 않습니다.
-- **SmoothQuant** (`w8a8_smoothquant`)는 weight smoothing + per-token dynamic activation 조합입니다. W8A8 static 대비 -3.93 개선됩니다.
+- **W8A8 + SmoothQuant**가 가장 낮은 손실을 기록합니다. activation outlier를 weight로 이관한 뒤 per-token dynamic scale을 적용하므로, static scale의 outlier 민감도 문제를 동시에 해소합니다.
+- **W8A8 static**이 dynamic 대비 크게 나쁜 이유: MinMax observer는 calibration 데이터 전체의 최대 activation 값을 scale 기준으로 삼습니다. 다양한 128개 샘플에 포함된 outlier가 scale을 넓혀 일반 값의 resolution을 떨어뜨립니다. Percentile/MSE observer로 교체하면 outlier clipping 효과로 개선됩니다.
 - **GPTQ**는 Hessian 기반 오차 전파로 W4A16 RTN 대비 -4.93 개선됩니다.
 
 ### Round-trip 일치 확인 (Qwen3-0.6B)

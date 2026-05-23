@@ -451,15 +451,15 @@ scheme.activation is None 여부로 분기
 | method | 통계 | scale/zp 계산 | Multi-GPU 동기화 |
 |--------|------|--------------|----------------|
 | `minmax` (기본) | running min/max | MinMax + zero 포함 보장 | `all_reduce(MIN/MAX)` |
-| `percentile` | 전체 activation 수집 | 지정 percentile 클리핑 후 MinMax | `all_gather_object` → raw 병합 후 계산 |
-| `mse` | grid-search | MSE 최소 scale 탐색 | `all_gather_object` → raw 병합 후 탐색 |
+| `percentile` | 2048-bin histogram (GPU) | CDF에서 bin edge 인덱싱 | range all_reduce → resize → all_reduce(SUM) |
+| `mse` | 2048-bin histogram (GPU) | bin center 기반 weighted MSE grid-search | range all_reduce → resize → all_reduce(SUM) |
 
 **설계 결정:**
 - `BaseObserver` 공통 인터페이스 (`update()` / `compute_scale_zp()`) — 생성 시 spec을 받아 granularity 인지
 - `MinMaxObserver`가 기본값 — tensor 연산 유지로 multi-GPU all_reduce 확장 용이
 - weight·activation이 동일 observer 공유 — activation observer는 `FakeQuantLinear`가, weight observer는 `QuantizationModifier.initialize()`가 `calibration_method`에 따라 인스턴스화
 - `finalize()`에서 `module.input_observer = None` → state_dict 오염 방지
-- percentile은 메모리 heavy, mse는 grid-search 비용 → POC 기본값은 minmax
+- Percentile/MSE는 `NUM_BINS=2048` histogram을 GPU에 유지 — 메모리 O(units × 2048) 고정, sample 수 무관. NCCL all_reduce 전용으로 raw data 교환 없음
 
 ### finalize()
 
@@ -1261,7 +1261,7 @@ def calibrate(self, model, dataloader, sequential=False):
 
 ### 13-3. Multi-GPU 지원 (가산점 요소)
 
-**현재 상태: Milestone 13 완료 — observer `sync()` 3종 구현(MinMax는 all_reduce, Percentile/MSE는 all_gather) + gloo 2-프로세스 검증. Tensor Parallelism과 실 2-GPU `device_map="auto"` 실측은 범위 외 / 하드웨어 한계.**
+**현재 상태: Milestone 13 완료 — observer `sync()` 3종 모두 NCCL all_reduce 기반. MinMax: all_reduce(MIN/MAX). Percentile/MSE: histogram 기반 range all_reduce → resize → all_reduce(SUM). GPU 상주, raw data 교환 없음. gloo 2-프로세스 검증. Tensor Parallelism과 실 2-GPU `device_map="auto"` 실측은 범위 외 / 하드웨어 한계.**
 
 **고려해야 할 사항:**
 

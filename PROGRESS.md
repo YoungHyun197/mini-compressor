@@ -338,15 +338,14 @@ rank 0 저장 가드 (serialize.py) — 이미 적용됨
 #### 13-1. DataParallel calibration ✅ 완료
 - [x] rank 0 저장 가드 (`serialize.py:103`) — 이미 구현됨
 - [x] `MinMaxObserver.sync()` — `all_reduce(MIN/MAX)` (min·max는 결합적 → 한 줄로 정확 병합)
-- [x] `PercentileObserver.sync()` — `all_gather_object`로 raw `_data` 전역 공유
-- [x] `MSEObserver.sync()` — `all_gather_object`로 raw `_data` 전역 공유
-      (grid-search는 비결합적 → 부분 통계 병합 불가, raw 공유가 정확·수술적)
+- [x] `PercentileObserver.sync()` — range all_reduce → histogram resize → all_reduce(SUM). GPU histogram 기반, NCCL 전용
+- [x] `MSEObserver.sync()` — range all_reduce → histogram resize → all_reduce(SUM). GPU histogram 기반, NCCL 전용
+      (histogram 기반으로 raw data 교환 없이 NCCL 통신만 사용)
 - [x] `QuantizationModifier.calibrate()`에서 `compute_scale_zp` 직전 `sync()` 호출
 
 #### 13-2. device_map="auto" 호환 ✅ 코드 감사 완료
 - [x] scale이 `weight.device`를 따라가는지 감사 — `weight_scale`은 weight에서 계산돼 OK,
-      `input_scale`은 Percentile/MSE가 `_data`를 CPU로 모아 CPU에 남던 갭 발견 →
-      `calibrate()`에서 `.to(mod.weight.device)`로 보정
+      `input_scale` device 갭은 histogram 리팩토링으로 근본 해소 (GPU 상주). `calibrate()`의 `.to(mod.weight.device)` 보정은 호환성 유지
 - [ ] 실제 2-GPU `device_map="auto"` round-trip 실측 — 2-GPU 하드웨어 없음 (한계)
 
 #### 13-3. Tensor Parallelism (범위 외 — 별도 논의)
@@ -406,7 +405,7 @@ demo.py 작성
 | AWQ | **구현 완료** | `AWQModifier` — activation magnitude grid-search W4A16, `from_recipe("w4a16_awq")` |
 | Sequential calibration | **구현 완료** | `calibrate(sequential=True)` — layer별 GPU offload, model.model.layers 구조 지원 |
 | Float8 | stub 있음 | `_fake_quantize_weight/activation()` dtype=="float8" 분기 — NotImplementedError |
-| Multi-GPU Observer 동기화 | **구현 완료** | `BaseObserver.sync()` 4종 (all_reduce / all_gather). gloo 2-proc 검증. 실 2-GPU 실측·Tensor Parallelism은 미진행 |
+| Multi-GPU Observer 동기화 | **구현 완료** | MinMax: all_reduce(MIN/MAX). Percentile/MSE: histogram 기반 range all_reduce → resize → all_reduce(SUM). 모두 NCCL. gloo 2-proc 검증. |
 | HuggingFace Hub 업로드 | **구현 완료** | `Compressor.save_to_hub()` — 모델 카드 자동 생성 + `HfApi.upload_folder` |
 | Multi-model 검증 | **완료** | TinyLlama-1.1B (LLaMA 아키텍처) — 라이브러리 코드 수정 없이 4 recipe 동작 |
 
@@ -491,7 +490,7 @@ demo.py 작성
 |-----------|------|------|
 | serialization 포맷 설계 (quantization config 등) | **완료** | compressed-tensors 포맷 호환 `quantization_config.json`, `save_pretrained`/`load_pretrained` 구현 |
 | HuggingFace Hub model card upload 가능한 구조 | **완료** | `save_to_hub(model, repo_id)` — model card 자동 생성 + `HfApi.upload_folder`. `pip install mini-compressor[hub]`로 선택 의존성 설치 |
-| Multi-GPU 고려 | **완료** | M13 — observer `sync()` 4종 (all_reduce / all_gather), gloo 2-proc 검증 |
+| Multi-GPU 고려 | **완료** | M13 — observer `sync()` 3종 모두 NCCL all_reduce. Percentile/MSE는 histogram 기반으로 GPU-native sync. gloo 2-proc 검증 |
 
 ---
 

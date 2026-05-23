@@ -304,11 +304,11 @@ weight와 activation calibration은 같은 observer 추상화를 사용합니다
 
 | Observer | Sync 방식 |
 |----------|-----------|
-| MinMax | `all_reduce(MIN/MAX)` |
-| Percentile | `all_gather_object(raw_data)` |
-| MSE | `all_gather_object(raw_data)` |
+| MinMax | `all_reduce(MIN/MAX)` — 결합적 통계, 통신 O(1) |
+| Percentile | range `all_reduce` → histogram resize → `all_reduce(SUM)` |
+| MSE | range `all_reduce` → histogram resize → `all_reduce(SUM)` |
 
-Percentile, MSE는 rank별 부분 통계만으로 전역 threshold를 정확히 복원할 수 없기 때문에 raw data gather를 사용합니다.
+Percentile, MSE는 고정 크기(2048 bins) histogram을 GPU에 유지합니다. sync는 (1) global range 합의, (2) 로컬 histogram을 global range로 재분배, (3) histogram SUM 세 단계로 이루어지며, raw data 교환 없이 순수 NCCL 통신만 사용합니다.
 
 ---
 

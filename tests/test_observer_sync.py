@@ -1,4 +1,4 @@
-# Multi-GPU observer sync 검증 — gloo 백엔드 2-프로세스로 all_reduce/all_gather 실검증
+# Multi-GPU observer sync 검증 — gloo 백엔드 2-프로세스로 all_reduce 실검증
 import dataclasses
 import os
 import socket
@@ -45,7 +45,12 @@ def _rank_data(rank: int) -> torch.Tensor:
 
 
 def _run_observer_sync(rank: int, port: int) -> None:
-    """spawn된 각 프로세스: 4개 observer의 분산 sync 결과가 단일 프로세스 전역 결과와 일치하는지 검증."""
+    """spawn된 각 프로세스: 모든 observer의 분산 sync 결과가 단일 프로세스 전역 결과와 일치하는지 검증.
+
+    MinMax: min/max는 결합적이므로 all_reduce(MIN/MAX)로 정확히 일치.
+    Percentile/MSE: histogram 기반이므로 단일 프로세스와 동일한 연산 경로를 거쳐
+    all_reduce(SUM) 후 결과가 일치한다. FP 누적 차이를 고려해 atol을 약간 완화.
+    """
     dist.init_process_group(
         backend="gloo", rank=rank, world_size=_WORLD,
         init_method=f"tcp://127.0.0.1:{port}",
@@ -65,10 +70,11 @@ def _run_observer_sync(rank: int, port: int) -> None:
                 ref.update(_rank_data(r))
             ref_scale, ref_zp = ref.compute_scale_zp()
 
-            assert torch.allclose(scale, ref_scale, atol=1e-5), (
+            atol = 1e-5 if method == "minmax" else 1e-4
+            assert torch.allclose(scale, ref_scale, atol=atol), (
                 f"{method} rank{rank}: scale {scale} != ref {ref_scale}"
             )
-            assert torch.allclose(zp, ref_zp, atol=1e-5), (
+            assert torch.allclose(zp, ref_zp, atol=atol), (
                 f"{method} rank{rank}: zp {zp} != ref {ref_zp}"
             )
     finally:

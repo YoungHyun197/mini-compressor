@@ -97,7 +97,7 @@ W4A16는 `scheme.activation = None`이므로 calibrate()에서 즉시 return.
 
 - **MinMaxObserver의 buffer**: `min_val`, `max_val`을 `register_buffer`로 등록. `model.to(device)` 시 자동으로 같은 device로 이동.
 
-- **PercentileObserver / MSEObserver**: raw data를 CPU list로 수집 (`_data: list[torch.Tensor]`). GPU 메모리 절약 목적. compute 시점에 `torch.cat`으로 합침.
+- **PercentileObserver / MSEObserver**: `NUM_BINS=2048` 고정 크기 histogram을 GPU에 유지. `update()`에서 `_build_histogram()`으로 누적. 메모리 O(units × 2048) 고정 — sample 수와 무관. `compute_scale_zp()`: Percentile은 CDF에서 bin edge 인덱싱, MSE는 bin center 기반 weighted MSE grid-search.
 
 - **`_scale_zp_from_range()` 공통 메서드**: min/max → scale, zero_point 계산 로직을 BaseObserver 메서드로 분리 (생성 시 받은 spec 사용, 단위별 broadcast). 모든 observer가 공유.
 
@@ -429,7 +429,7 @@ if not model_id:
 |------|------|------|------|
 | `GPTQModifier` | modifiers/gptq.py | ✅ 구현 완료 | Hessian 기반 W4A16. W4A16 RTN 25.89 → 20.96 (-4.93) |
 | `AWQModifier` | modifiers/awq.py | ✅ 구현 완료 (POC) | activation magnitude grid-search W4A16 |
-| `BaseObserver.sync()` | observer.py | ✅ 구현 완료 | MinMax: all_reduce. Percentile/MSE: all_gather_object |
+| `BaseObserver.sync()` | observer.py | ✅ 구현 완료 | MinMax: all_reduce(MIN/MAX). Percentile/MSE: range all_reduce → histogram resize → all_reduce(SUM) |
 | `save_to_hub()` | compressor.py | ✅ 구현 완료 | HF Hub 업로드. 모델 카드 자동 생성 + `HfApi.upload_folder`. `pip install mini-compressor[hub]` |
 | float8 경로 | fake_quant_linear.py | stub | `spec.dtype == "float8"` 시 NotImplementedError |
 
@@ -577,8 +577,7 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **결정**: observer 종류에 따라 두 방식.
 - `MinMaxObserver.sync()` — `all_reduce(min_val, MIN)` / `all_reduce(max_val, MAX)`. min·max는 결합법칙이 성립해 부분 결과를 정확히 병합. 통신량 O(1). road_map 원칙 2("MinMax 통계를 tensor 연산으로 유지")가 노린 결과.
-- `Percentile/MSE.sync()` — `all_gather_object`로 raw `_data`를 전 rank에 공유. 둘 다 percentile·grid-search 등 비결합적 계산이라 부분 통계 병합 불가. (a) raw data 공유 vs (b) 알고리즘 재구조화 중, (b)는 동작 코드 2개를 갈아엎음 → (a) 채택. `compute_scale_zp` 무수정 + `sync()`만 추가. 한계: 메모리 rank배 → 대규모는 (b)가 future work.
-- stub docstring의 "MSE: all_reduce(argmin)"은 부정확(rank별 argmin이 달라 병합 안 됨) — all_gather로 바로잡음.
+- `Percentile/MSE.sync()` — histogram 기반 3단계 NCCL 동기화: (1) `all_reduce(MIN/MAX)`로 global range 확정, (2) `_resize_histogram()`으로 local histogram을 global range로 재분배, (3) `all_reduce(SUM)`으로 histogram 합산. 모든 rank가 동일한 전역 분포 histogram을 보유한 후 `compute_scale_zp()` 호출. raw data 교환 없이 순수 NCCL 통신만 사용.
 
 **no-op 보장**: `_dist_active()`(`dist.is_initialized() and world_size>1`)가 아니면 `sync()`는 즉시 return. 단일 GPU 경로(기존 테스트·demo·PPL) 무변경.
 
@@ -588,9 +587,9 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 ### 30. device_map 감사 — input_scale을 weight.device로 보정
 
-**13-2 감사 결과**: `weight_scale`은 weight에서 계산돼 device를 따라감. MinMax observer는 FakeQuantLinear 서브모듈이라 buffer도 따라감. 그러나 Percentile/MSE는 `update()`에서 `_data`를 `.cpu()`로 모아 `input_scale`이 CPU에 남음 → GPU 모델 forward 시 device mismatch.
+**13-2 감사 결과**: `weight_scale`은 weight에서 계산돼 device를 따라감. MinMax observer는 FakeQuantLinear 서브모듈이라 buffer도 따라감. Percentile/MSE는 histogram을 GPU에 유지하므로 `input_scale`도 같은 device에 남아 device mismatch 없음 (이전 `.cpu()` 강제 이동 방식의 문제가 histogram 리팩토링으로 해소됨).
 
-**fix**: `calibrate()`에서 `mod.input_scale = scale.to(mod.weight.device)` (zp 동일). 단일 CPU/GPU 모두 안전.
+**기존 fix**: `calibrate()`에서 `mod.input_scale = scale.to(mod.weight.device)` (zp 동일). 단일 CPU/GPU 모두 안전. histogram 방식에서도 유효하나 실질적으로 불필요.
 
 ## 2026-05-17 — M6-D 멀티모델 검증
 

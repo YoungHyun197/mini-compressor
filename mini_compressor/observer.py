@@ -14,21 +14,6 @@ def _dist_active() -> bool:
     return dist.is_available() and dist.is_initialized() and dist.get_world_size() > 1
 
 
-def _sync_data(data: list[torch.Tensor]) -> list[torch.Tensor]:
-    """rank별 raw 통계 데이터 리스트를 all_gather해 전역 리스트로 합친다.
-
-    Percentile/MSE는 raw 데이터를 모아 compute_scale_zp에서 비결합적 계산
-    (percentile·grid-search)을 한다. 부분 통계로는 병합이 불가능하므로
-    raw 데이터를 전 rank가 공유해 동일한 전역 결과를 내도록 한다.
-    분산 환경이 아니면 입력을 그대로 돌려준다 (no-op).
-    """
-    if not _dist_active():
-        return data
-    gathered: list = [None] * dist.get_world_size()
-    dist.all_gather_object(gathered, data)
-    return [t for rank_data in gathered for t in rank_data]
-
-
 def _to_units(t: torch.Tensor, spec: QuantizationSpec) -> torch.Tensor:
     """텐서를 양자화 단위 기준 (단위..., 단위내_원소) 형태로 재배열한다.
 
@@ -49,6 +34,44 @@ def _to_units(t: torch.Tensor, spec: QuantizationSpec) -> torch.Tensor:
         f"observer가 지원하지 않는 granularity: '{g}'. "
         f"per_tensor / per_channel / per_group 중 하나여야 합니다."
     )
+
+
+def _build_histogram(
+    units: torch.Tensor,
+    h_min: torch.Tensor,
+    h_max: torch.Tensor,
+    num_bins: int,
+) -> torch.Tensor:
+    """units (..., k) → histogram (..., num_bins) — GPU에서 직접 실행."""
+    step = ((h_max - h_min) / num_bins).clamp(min=1e-8)
+    idx = ((units - h_min.unsqueeze(-1)) / step.unsqueeze(-1)).floor().long()
+    idx = idx.clamp(0, num_bins - 1)
+    hist = torch.zeros(*units.shape[:-1], num_bins, dtype=torch.float32, device=units.device)
+    hist.scatter_add_(-1, idx, torch.ones_like(units, dtype=torch.float32))
+    return hist
+
+
+def _resize_histogram(
+    hist: torch.Tensor,
+    old_min: torch.Tensor,
+    old_max: torch.Tensor,
+    new_min: torch.Tensor,
+    new_max: torch.Tensor,
+) -> torch.Tensor:
+    """기존 histogram의 bin 카운트를 새 범위에 맞는 bin으로 선형 재분배한다.
+
+    rank 간 범위가 다를 때 histogram을 공통 범위로 정렬한 뒤 all_reduce할 수 있도록 한다.
+    """
+    num_bins = hist.shape[-1]
+    device = hist.device
+    old_step = ((old_max - old_min) / num_bins).clamp(min=1e-8)
+    centers = old_min.unsqueeze(-1) + (torch.arange(num_bins, device=device) + 0.5) * old_step.unsqueeze(-1)
+    new_step = ((new_max - new_min) / num_bins).clamp(min=1e-8)
+    new_idx = ((centers - new_min.unsqueeze(-1)) / new_step.unsqueeze(-1)).floor().long()
+    new_idx = new_idx.clamp(0, num_bins - 1)
+    new_hist = torch.zeros_like(hist)
+    new_hist.scatter_add_(-1, new_idx, hist)
+    return new_hist
 
 
 class BaseObserver(nn.Module):
@@ -138,77 +161,157 @@ class MinMaxObserver(BaseObserver):
 
 
 class PercentileObserver(BaseObserver):
-    """percentile 클리핑으로 outlier 제거 — multi-GPU: all_gather 후 전체 분포에서 계산."""
+    """histogram 기반 percentile 클리핑 — GPU 상주, NCCL all_reduce(SUM) 동기화.
+
+    raw tensor를 누적하지 않고 고정 크기(NUM_BINS) histogram을 GPU에 유지한다.
+    메모리는 sample 수와 무관하게 O(units × NUM_BINS)로 고정된다.
+    multi-GPU sync는 (1) global range all_reduce → (2) 로컬 histogram resize →
+    (3) histogram all_reduce(SUM) 세 단계로 NCCL 통신만 사용한다.
+    """
+
+    NUM_BINS: int = 2048
 
     def __init__(self, spec: QuantizationSpec, percentile: float = 99.9):
         super().__init__(spec)
         self.percentile = percentile
-        self._data: list[torch.Tensor] = []
+        self.register_buffer("_hist", None)
+        self.register_buffer("_hist_min", None)
+        self.register_buffer("_hist_max", None)
 
     def update(self, x: torch.Tensor) -> None:
-        x = x.detach().cpu()
-        # per_tensor는 배치마다 shape이 달라 flatten해 모으고,
-        # per_channel/per_group은 채널 구조를 보존해야 단위별 통계가 가능하다.
-        self._data.append(x.flatten() if self.spec.granularity == "per_tensor" else x)
+        x = x.detach()
+        units = _to_units(x, self.spec)
+        cur_min = units.amin(dim=-1)
+        cur_max = units.amax(dim=-1)
+
+        if self._hist is None:
+            self._buffers["_hist_min"] = cur_min.clone()
+            self._buffers["_hist_max"] = cur_max.clone()
+            self._buffers["_hist"] = _build_histogram(units, cur_min, cur_max, self.NUM_BINS)
+        else:
+            new_min = torch.minimum(self._hist_min, cur_min)
+            new_max = torch.maximum(self._hist_max, cur_max)
+            if not (new_min.equal(self._hist_min) and new_max.equal(self._hist_max)):
+                self._buffers["_hist"] = _resize_histogram(
+                    self._hist, self._hist_min, self._hist_max, new_min, new_max
+                )
+                self._buffers["_hist_min"] = new_min
+                self._buffers["_hist_max"] = new_max
+            self._buffers["_hist"] = self._hist + _build_histogram(
+                units, self._hist_min, self._hist_max, self.NUM_BINS
+            )
 
     def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.spec.granularity == "per_tensor":
-            raw = torch.cat(self._data)
-        else:
-            raw = torch.cat(self._data, dim=0)
-        units = _to_units(raw, self.spec)
-        lower = (100.0 - self.percentile) / 100.0
-        upper = self.percentile / 100.0
-        min_val = torch.quantile(units, lower, dim=-1)
-        max_val = torch.quantile(units, upper, dim=-1)
+        if self._hist is None:
+            raise RuntimeError("update()를 최소 한 번 호출한 뒤 compute_scale_zp()를 호출해야 합니다.")
+        B = self.NUM_BINS
+        step = ((self._hist_max - self._hist_min) / B).clamp(min=1e-8)
+        # bin edges: (..., B+1)
+        bin_edges = self._hist_min.unsqueeze(-1) + torch.arange(B + 1, device=self._hist.device) * step.unsqueeze(-1)
+
+        total = self._hist.sum(dim=-1, keepdim=True).clamp(min=1)
+        cdf = self._hist.cumsum(dim=-1) / total
+
+        lower_frac = (100.0 - self.percentile) / 100.0
+        upper_frac = self.percentile / 100.0
+
+        lower_idx = (cdf < lower_frac).sum(dim=-1).clamp(0, B)
+        upper_idx = (cdf <= upper_frac).sum(dim=-1).clamp(1, B)
+
+        min_val = bin_edges.gather(-1, lower_idx.unsqueeze(-1)).squeeze(-1)
+        max_val = bin_edges.gather(-1, upper_idx.unsqueeze(-1)).squeeze(-1)
         return self._scale_zp_from_range(min_val, max_val)
 
     def reset(self) -> None:
-        self._data.clear()
+        self._buffers["_hist"] = None
+        self._buffers["_hist_min"] = None
+        self._buffers["_hist_max"] = None
 
     def sync(self) -> None:
-        """rank별 raw 데이터를 all_gather해 전역 분포로 합친다."""
-        self._data = _sync_data(self._data)
+        """histogram 기반 NCCL 동기화: range 합의 → resize → histogram SUM.
+
+        (1) all_reduce(MIN/MAX)로 global range 확정
+        (2) 로컬 histogram을 global range로 resize (bin 카운트 재분배)
+        (3) all_reduce(SUM)으로 histogram 합산
+        → 모든 rank가 동일한 전역 분포 histogram을 보유하게 된다.
+        """
+        if not _dist_active() or self._hist is None:
+            return
+        local_min = self._hist_min.clone()
+        local_max = self._hist_max.clone()
+        dist.all_reduce(self._hist_min, op=dist.ReduceOp.MIN)
+        dist.all_reduce(self._hist_max, op=dist.ReduceOp.MAX)
+        self._buffers["_hist"] = _resize_histogram(
+            self._hist, local_min, local_max, self._hist_min, self._hist_max
+        )
+        dist.all_reduce(self._hist, op=dist.ReduceOp.SUM)
 
 
 class MSEObserver(BaseObserver):
-    """grid-search로 양자화 MSE를 최소화하는 clip range 탐색 — 단위마다 독립 탐색.
+    """histogram 기반 MSE grid-search — GPU 상주, NCCL all_reduce(SUM) 동기화.
 
-    multi-GPU: raw 데이터를 all_gather한 뒤 전역 분포에서 탐색.
+    raw tensor 대신 histogram 위에서 bin center별 weighted MSE를 계산한다.
+    sync 방식은 PercentileObserver와 동일: range all_reduce → resize → histogram SUM.
     """
+
+    NUM_BINS: int = 2048
 
     def __init__(self, spec: QuantizationSpec, num_grids: int = 100):
         super().__init__(spec)
         self.num_grids = num_grids
-        self._data: list[torch.Tensor] = []
+        self.register_buffer("_hist", None)
+        self.register_buffer("_hist_min", None)
+        self.register_buffer("_hist_max", None)
 
     def update(self, x: torch.Tensor) -> None:
-        x = x.detach().cpu()
-        self._data.append(x.flatten() if self.spec.granularity == "per_tensor" else x)
+        x = x.detach()
+        units = _to_units(x, self.spec)
+        cur_min = units.amin(dim=-1)
+        cur_max = units.amax(dim=-1)
+
+        if self._hist is None:
+            self._buffers["_hist_min"] = cur_min.clone()
+            self._buffers["_hist_max"] = cur_max.clone()
+            self._buffers["_hist"] = _build_histogram(units, cur_min, cur_max, self.NUM_BINS)
+        else:
+            new_min = torch.minimum(self._hist_min, cur_min)
+            new_max = torch.maximum(self._hist_max, cur_max)
+            if not (new_min.equal(self._hist_min) and new_max.equal(self._hist_max)):
+                self._buffers["_hist"] = _resize_histogram(
+                    self._hist, self._hist_min, self._hist_max, new_min, new_max
+                )
+                self._buffers["_hist_min"] = new_min
+                self._buffers["_hist_max"] = new_max
+            self._buffers["_hist"] = self._hist + _build_histogram(
+                units, self._hist_min, self._hist_max, self.NUM_BINS
+            )
 
     def compute_scale_zp(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        if self.spec.granularity == "per_tensor":
-            raw = torch.cat(self._data)
-        else:
-            raw = torch.cat(self._data, dim=0)
-        units = _to_units(raw, self.spec)  # (단위..., k)
+        if self._hist is None:
+            raise RuntimeError("update()를 최소 한 번 호출한 뒤 compute_scale_zp()를 호출해야 합니다.")
+        B = self.NUM_BINS
+        device = self._hist.device
 
         qmax = 2 ** (self.spec.num_bits - 1) - 1
-        qmin = -qmax if self.spec.symmetric else -(2 ** (self.spec.num_bits - 1))
+        qmin_q = -qmax if self.spec.symmetric else -(2 ** (self.spec.num_bits - 1))
 
-        umin = units.amin(dim=-1)
-        umax = units.amax(dim=-1)
+        step = ((self._hist_max - self._hist_min) / B).clamp(min=1e-8)
+        # bin centers: (..., B)
+        centers = self._hist_min.unsqueeze(-1) + (torch.arange(B, device=device) + 0.5) * step.unsqueeze(-1)
 
-        best_scale, best_zp = self._scale_zp_from_range(umin, umax)
-        best_err = torch.full_like(best_scale, float("inf"))
+        total = self._hist.sum(dim=-1, keepdim=True).clamp(min=1)
+        weight = self._hist / total  # normalized (확률 가중치)
 
-        # alpha로 단위별 min/max를 함께 줄여 clip range 후보를 만든다.
+        best_scale, best_zp = self._scale_zp_from_range(self._hist_min, self._hist_max)
+        best_err = torch.full(best_scale.shape, float("inf"), device=device)
+
         for alpha in torch.linspace(0.8, 1.0, self.num_grids).tolist():
-            scale, zp = self._scale_zp_from_range(umin * alpha, umax * alpha)
+            scale, zp = self._scale_zp_from_range(self._hist_min * alpha, self._hist_max * alpha)
             s = scale.unsqueeze(-1)
             z = zp.unsqueeze(-1)
-            q = torch.clamp(torch.round(units / s + z), qmin, qmax)
-            err = ((units - (q - z) * s) ** 2).mean(dim=-1)
+            q = torch.clamp(torch.round(centers / s + z), qmin_q, qmax)
+            recon = (q - z) * s
+            err = ((centers - recon) ** 2 * weight).sum(dim=-1)
 
             better = err < best_err
             best_scale = torch.where(better, scale, best_scale)
@@ -218,11 +321,22 @@ class MSEObserver(BaseObserver):
         return best_scale, best_zp
 
     def reset(self) -> None:
-        self._data.clear()
+        self._buffers["_hist"] = None
+        self._buffers["_hist_min"] = None
+        self._buffers["_hist_max"] = None
 
     def sync(self) -> None:
-        """rank별 raw 데이터를 all_gather해 전역 분포로 합친다."""
-        self._data = _sync_data(self._data)
+        """PercentileObserver와 동일: range all_reduce → resize → histogram SUM."""
+        if not _dist_active() or self._hist is None:
+            return
+        local_min = self._hist_min.clone()
+        local_max = self._hist_max.clone()
+        dist.all_reduce(self._hist_min, op=dist.ReduceOp.MIN)
+        dist.all_reduce(self._hist_max, op=dist.ReduceOp.MAX)
+        self._buffers["_hist"] = _resize_histogram(
+            self._hist, local_min, local_max, self._hist_min, self._hist_max
+        )
+        dist.all_reduce(self._hist, op=dist.ReduceOp.SUM)
 
 
 OBSERVER_REGISTRY: dict[str, type[BaseObserver]] = {

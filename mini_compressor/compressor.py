@@ -195,8 +195,6 @@ def _write_model_card(
     if quant_mod.ignore:
         ignore_note = f"\n- **ignore**: `{quant_mod.ignore}`"
 
-    modifier_names = [type(m).__name__ for m in getattr(quant_mod, "_pipeline", [])]
-
     card = f"""---
 base_model: {base_model}
 library_name: mini-compressor

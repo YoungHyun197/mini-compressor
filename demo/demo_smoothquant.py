@@ -27,18 +27,12 @@ from mini_compressor.modifiers.smoothquant import SmoothQuantModifier
 from mini_compressor.modifiers.quantization import QuantizationModifier
 from mini_compressor.fake_quant_linear import FakeQuantLinear
 from mini_compressor.schemes import W8A8_DYNAMIC
+from mini_compressor.utils import get_calibration_data
 
 MODEL_ID = "Qwen/Qwen3-0.6B"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_NEW_TOKENS = 20
-
-CALIB_TEXTS = [
-    "The quick brown fox jumps over the lazy dog.",
-    "Quantization reduces model size by representing weights in lower precision.",
-    "Large language models require significant computational resources.",
-    "Neural networks learn representations through gradient descent.",
-    "Attention mechanisms allow models to focus on relevant input tokens.",
-]
+N_CALIB_SAMPLES = 128
 
 
 def _load(model_id):
@@ -106,10 +100,10 @@ def _stats_str(x_max):
 
 def run(model_id=MODEL_ID, alpha=0.5):
     tokenizer = AutoTokenizer.from_pretrained(model_id)
-    calib_inputs = [
-        {k: v.to(DEVICE) for k, v in tokenizer(t, return_tensors="pt").items()}
-        for t in CALIB_TEXTS
-    ]
+    print(f"  캘리브레이션 데이터 준비 중 (wikitext-2, {N_CALIB_SAMPLES} samples)...")
+    calib_inputs = get_calibration_data(
+        tokenizer, n_samples=N_CALIB_SAMPLES, seq_len=512, device=DEVICE
+    )
 
     print(f"\n{'─'*65}")
     print(f"  mini-compressor  |  SmoothQuant Demo  |  alpha={alpha}  device={DEVICE.upper()}")

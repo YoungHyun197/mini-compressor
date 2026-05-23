@@ -16,6 +16,7 @@ from mini_compressor import (
     Compressor,
     load_pretrained,
 )
+from mini_compressor.utils import get_calibration_data
 
 MODEL_ID = "Qwen/Qwen3-0.6B"
 PROMPT   = "The key advantage of quantization is"
@@ -160,17 +161,8 @@ def main():
     # ── 4. W8A8 static ────────────────────────────────────────────────────────
     print("\n[4/6] W8A8 static — weight+activation INT8 (MinMax calibration)")
     model_w8 = load_model(args.model)
-    calib_texts = [
-        "The quick brown fox jumps over the lazy dog.",
-        "Quantization reduces model size by representing weights in lower precision.",
-        "Large language models require significant computational resources.",
-        "Neural networks learn representations through gradient descent.",
-        "Attention mechanisms allow models to focus on relevant input tokens.",
-    ]
-    calib_inputs = [
-        {k: v.to(DEVICE) for k, v in tokenizer(t, return_tensors="pt").items()}
-        for t in calib_texts
-    ]
+    print("  캘리브레이션 데이터 준비 중 (wikitext-2, 128 samples)...")
+    calib_inputs = get_calibration_data(tokenizer, n_samples=128, seq_len=512, device=DEVICE)
     Compressor.from_recipe("w8a8", targets=["Linear"], ignore=["lm_head"]).compress(
         model_w8, dataloader=calib_inputs
     )
@@ -199,6 +191,7 @@ def main():
     # ── 6. W8A8 + SmoothQuant ─────────────────────────────────────────────────
     print("\n[6/6] W8A8 + SmoothQuant — activation 분포 평탄화 후 W8A8 dynamic")
     model_sq = load_model(args.model)
+    # calib_inputs는 W8A8 static과 동일한 wikitext-2 128 samples 재사용
     Compressor.from_recipe(
         "w8a8_smoothquant", targets=["Linear"], ignore=["lm_head"]
     ).compress(model_sq, dataloader=calib_inputs)

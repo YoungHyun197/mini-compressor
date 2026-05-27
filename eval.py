@@ -1,9 +1,9 @@
 # mini-compressor 데모 — W4A16 / W4A16-GPTQ / W8A8 / W8A8-dynamic / W8A8+SmoothQuant 압축·생성·저장 round-trip
 """
 사용법:
-    python demo.py                        # 기본: 다섯 scheme 생성 비교
-    python demo.py --save /tmp/demo_save  # W4A16 저장 + 로드 round-trip 추가
-    python demo.py --ppl                  # wikitext-2 perplexity 측정 추가 (시간 소요)
+    python eval.py                        # 기본: 다섯 scheme 생성 비교
+    python eval.py --save /tmp/demo_save  # W4A16 저장 + 로드 round-trip 추가
+    python eval.py --ppl                  # wikitext-2 perplexity 측정 추가 (시간 소요)
 """
 import argparse
 import math

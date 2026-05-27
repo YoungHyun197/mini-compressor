@@ -26,7 +26,8 @@ mini_compressor/
 
 tests/                     # 수식, lifecycle, serialization, sync 검증
 notebooks/                 # milestone별 실험 및 검증 기록
-demo.py                    # generate / save-load / perplexity end-to-end demo
+demo_quick.py              # 빠른 fake-quant generate smoke demo
+eval.py                    # generate / save-load / perplexity evaluation demo
 ```
 
 핵심 책임 분리는 다음과 같습니다.
@@ -387,17 +388,29 @@ save_dir/
 ## 데모 실행
 
 ```bash
-# FP16과 quantized recipe generate 비교
-python demo.py
+# 빠른 fake-quant generate 동작 확인
+# 기본 recipe: w8a8 static
+python demo_quick.py
+
+# 지원 recipe를 직접 선택
+python demo_quick.py --recipe w8a8_dynamic
+python demo_quick.py --recipe w4a16
+python demo_quick.py --recipe w8a8_smoothquant
+
+# calibration이 필요한 recipe를 더 빠르게 확인
+python demo_quick.py --recipe w8a8 --calib-samples 2 --calib-seq-len 64
+
+# 다른 HF causal LM에서 빠른 generate 확인
+python demo_quick.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0
+
+# 전체 recipe generate / PPL 비교용 evaluation
+python eval.py
 
 # W4A16 저장 후 load_pretrained round-trip 확인
-python demo.py --save /tmp/mini_compressor_demo
+python eval.py --save /tmp/mini_compressor_demo
 
 # wikitext-2 perplexity 측정
-python demo.py --ppl
-
-# 다른 HF causal LM에서 실행 (아키텍처 비종속 확인)
-python demo.py --model TinyLlama/TinyLlama-1.1B-Chat-v1.0
+python eval.py --ppl
 ```
 
 ---

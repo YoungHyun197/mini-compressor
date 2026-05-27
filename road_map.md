@@ -699,7 +699,7 @@ Quark도 구조 생성과 scale 로딩을 분리하는 동일 패턴을 사용.
 ```text
 1. modifier.py — initialize(compute_scales=True) 파라미터 추가
 2. serialize.py — _scheme_to_dict, _scheme_from_dict, save_pretrained, load_pretrained 구현
-3. compressor.py — Compressor.from_scheme(), compress() 구현
+3. compressor.py — Compressor.from_recipe(), compress() 구현
 4. round-trip 테스트 — W8A8, W4A16 compress → save → load → generate 검증
 ```
 
@@ -879,7 +879,7 @@ scheme.activation is None 분기 확인
      - quantization_config.json: compressed-tensors 포맷, status="calibrated"
      - load_pretrained: config._name_or_path로 model_id 복원
      - initialize(compute_scales=False) 패턴 활용
-8-3. compressor.py — Compressor.from_scheme("w8a8", ignore=["lm_head"]) + compress() 구현
+8-3. compressor.py — Compressor.from_recipe("w8a8", ignore=["lm_head"]) + compress() 구현
      - 내부에서 QuantizationModifier 생성, initialize → calibrate → finalize 자동 실행
 8-4. round-trip 테스트 — W8A8, W4A16 compress → save → load → generate 검증
 ```
@@ -903,11 +903,11 @@ known limitation 정리
 ```text
 lm-eval-harness 연동 ✓
 Qwen3-0.6B FP baseline 측정 — 18.16 ✓
-W8A8 static 측정 — 25.01 ✓
 W4A16 RTN 측정 — 25.89 ✓
-W8A8 dynamic 측정 — 18.48 ✓
-W8A8 SmoothQuant 측정 — 23.67 ✓
 W4A16 GPTQ 측정 — 20.96 ✓  (RTN 25.89 대비 -4.93)
+W8A8 dynamic 측정 — 18.48 ✓
+W8A8 static 측정 — 29.71 ✓  (calibration: wikitext-2 128 samples)
+W8A8 + SmoothQuant 측정 — 18.33 ✓  (calibration: wikitext-2 128 samples, FP16 대비 +0.17)
 FP vs RTN vs SmoothQuant vs GPTQ 비교 표 → README 반영 ✓
 ```
 
@@ -937,7 +937,7 @@ modifier.calibrate(model, dataloader, sequential=True)   # 대형 모델: layer-
 > `meta-llama/Llama-3.2-1B`은 HF gated(접근 미승인) → 동일 `model_type=llama`인
 > `TinyLlama/TinyLlama-1.1B-Chat-v1.0`로 대체. 결과: 라이브러리 코드 0줄 수정으로
 > 4개 recipe 동작, SmoothQuant pair 44개 자동 탐색(RMSNorm, GQA 32:4), `lm_head` ignore.
-> 산출물: `demo.py --model` 인자, `notebooks/milestone6d_llama_validation.ipynb`.
+> 산출물: `eval.py --model` 인자, `notebooks/milestone6d_llama_validation.ipynb`.
 
 ```text
 LLaMA 계열 에서 W8A8 / W4A16 동작 확인
@@ -956,7 +956,7 @@ SmoothQuant norm 탐색: 이름 기반 auto-detect 또는 model_config로 지정
 
 ```text
 notebooks/demo.ipynb 작성
-1. Compressor.from_scheme("w8a8").compress(model, dataloader)
+1. Compressor.from_recipe("w8a8").compress(model, dataloader)
 2. model.generate() 동작 확인
 3. save_pretrained → quantization_config.json 확인
 4. lm-eval 수치 출력
@@ -1087,7 +1087,7 @@ load script 또는 limitation 명시
 목표:
 
 ```text
-Compressor.from_scheme("w8a8") 진입점 확정
+Compressor.from_recipe("w8a8") 진입점 확정
 quantization_config.json 포맷 HF 스펙 맞춤
 save_pretrained / load 왕복 테스트
 ```
@@ -1122,7 +1122,7 @@ lm-eval-harness 연동 + FP / W8A8 / W4A16 perplexity 측정
 
 ```text
 notebooks/demo.ipynb 작성
-Compressor.from_scheme() → generate → save → lm-eval 전체 flow 재현
+Compressor.from_recipe() → generate → save → lm-eval 전체 flow 재현
 노트북 한 파일에서 발표 demo 가능한 상태로 완성
 ```
 

@@ -186,14 +186,37 @@ def _write_model_card(
 
     scheme = quant_mod.scheme
     base_model = getattr(getattr(model, "config", None), "_name_or_path", "unknown")
+    architecture = getattr(getattr(model, "config", None), "architectures", None)
+    architecture = architecture[0] if architecture else type(model).__name__
     w_bits = scheme.weight.num_bits
     a_bits = scheme.activation.num_bits if scheme.activation else "fp16"
     w_gran = scheme.weight.granularity.replace("per_", "per-")
+    w_axis = scheme.weight.axis if scheme.weight.axis is not None else "n/a"
+    w_group = scheme.weight.group_size if scheme.weight.group_size is not None else "n/a"
     recipe_name = recipe_name or scheme.name
 
-    ignore_note = ""
-    if quant_mod.ignore:
-        ignore_note = f"\n- **ignore**: `{quant_mod.ignore}`"
+    if scheme.activation is None:
+        act_summary = "FP16 / not quantized"
+        act_bits = "fp16"
+        act_type = "n/a"
+        act_gran = "n/a"
+        act_axis = "n/a"
+        act_group = "n/a"
+        act_symmetric = "n/a"
+        act_dynamic = "n/a"
+        act_calib = "n/a"
+    else:
+        act_summary = f"INT{scheme.activation.num_bits} ({scheme.activation.granularity.replace('per_', 'per-')})"
+        act_bits = scheme.activation.num_bits
+        act_type = scheme.activation.dtype
+        act_gran = scheme.activation.granularity.replace("per_", "per-")
+        act_axis = scheme.activation.axis if scheme.activation.axis is not None else "n/a"
+        act_group = scheme.activation.group_size if scheme.activation.group_size is not None else "n/a"
+        act_symmetric = scheme.activation.symmetric
+        act_dynamic = scheme.activation.dynamic
+        act_calib = scheme.activation.calibration_method
+
+    ignore_note = f"`{quant_mod.ignore}`" if quant_mod.ignore else "None"
 
     card = f"""---
 base_model: {base_model}
@@ -206,7 +229,23 @@ tags:
 
 # {repo_id.split("/")[-1]}
 
-Post-training quantization of [{base_model}](https://huggingface.co/{base_model}) using [mini-compressor](https://github.com/your-username/mini-compressor).
+Post-training quantization artifact for [{base_model}](https://huggingface.co/{base_model}) generated with `mini-compressor`.
+
+This repository is intended to demonstrate a HuggingFace-compatible compression artifact:
+model weights, tokenizer files, and explicit quantization metadata.
+
+## Model Overview
+
+| Field | Value |
+|-------|-------|
+| Base model | `{base_model}` |
+| Architecture | `{architecture}` |
+| Task | Text generation |
+| Input / Output | Text / Text |
+| Library | `mini-compressor` |
+| Artifact status | calibrated fake-quantized |
+| Intended use | Quantization workflow validation, accuracy sanity checks, save/load tests |
+| Out of scope | Production INT kernel benchmarking without a backend-specific export pass |
 
 ## Quantization Details
 
@@ -214,9 +253,64 @@ Post-training quantization of [{base_model}](https://huggingface.co/{base_model}
 |----------|-------|
 | Recipe | `{recipe_name}` |
 | Weight bits | W{w_bits} ({w_gran}) |
-| Activation bits | A{a_bits} |
+| Activation | {act_summary} |
 | Format | compressed-tensors (fake-quantized) |
-| Status | calibrated |{ignore_note}
+| Status | calibrated |
+| Ignored modules | {ignore_note} |
+
+## Quantization Configuration
+
+| Tensor | Bits | Type | Granularity | Axis | Group size | Symmetric | Dynamic | Calibration method |
+|--------|------|------|-------------|------|------------|-----------|---------|--------------------|
+| Weight | {scheme.weight.num_bits} | `{scheme.weight.dtype}` | `{w_gran}` | `{w_axis}` | `{w_group}` | `{scheme.weight.symmetric}` | `{scheme.weight.dynamic}` | `{scheme.weight.calibration_method}` |
+| Input activation | {act_bits} | `{act_type}` | `{act_gran}` | `{act_axis}` | `{act_group}` | `{act_symmetric}` | `{act_dynamic}` | `{act_calib}` |
+
+The quantization metadata is stored in `quantization_config.json` alongside the model checkpoint.
+
+## Calibration
+
+Calibration depends on the selected recipe:
+
+| Recipe family | Calibration requirement |
+|---------------|-------------------------|
+| `w4a16` RTN | No activation calibration required |
+| `w8a8` static | Calibration data required for activation observers |
+| `w8a8_dynamic` | No static activation calibration; activation scale is computed per token at runtime |
+| `w8a8_smoothquant` | Calibration data required for SmoothQuant activation statistics |
+| `w4a16_gptq` | Calibration data required for Hessian collection |
+| `w4a16_awq` | Calibration data required for activation-aware scale search |
+
+This model card does not embed the calibration dataset name or sample count automatically.
+Record those values in this section when publishing a measured checkpoint.
+
+## Creation
+
+Example pipeline:
+
+```python
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from mini_compressor import Compressor
+
+model_id = "{base_model}"
+tokenizer = AutoTokenizer.from_pretrained(model_id)
+model = AutoModelForCausalLM.from_pretrained(
+    model_id,
+    torch_dtype=torch.float16,
+    device_map="auto",
+)
+
+compressor = Compressor.from_recipe(
+    "{recipe_name}",
+    targets=["Linear"],
+    ignore={quant_mod.ignore or []},
+)
+
+compressor.compress(model, dataloader=calibration_data)
+compressor.save(model, "./{repo_id.split("/")[-1]}", tokenizer=tokenizer)
+```
+
+For weight-only or dynamic activation recipes, `calibration_data` may be omitted when the recipe does not require calibration.
 
 ## Usage
 
@@ -226,22 +320,67 @@ from mini_compressor import load_pretrained
 model = load_pretrained("{repo_id}")
 ```
 
-Or with the full pipeline:
+Or run a compression pipeline locally:
 
 ```python
 from mini_compressor import Compressor
-from transformers import AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 tokenizer = AutoTokenizer.from_pretrained("{base_model}")
+model = AutoModelForCausalLM.from_pretrained("{base_model}", torch_dtype="auto")
+
 model = Compressor.from_recipe("{recipe_name}").compress(
     model, dataloader=calibration_data
 )
 ```
 
-## Notes
+## Evaluation
 
-This model uses **fake quantization** (float16 weights + quantization error simulation).
-Actual INT{w_bits} packing and kernel dispatch require a compatible runtime (e.g., vLLM with compressed-tensors support).
+Add task metrics for a published checkpoint. Recommended checks:
+
+| Check | Recommended report |
+|-------|--------------------|
+| Generation sanity | Prompt, generated text, pass/fail |
+| Perplexity | Dataset, sequence length, stride, FP baseline, quantized result |
+| Save/load round-trip | Max logit diff or generation equivalence |
+| Downstream benchmark | Task, harness version, baseline, quantized score, recovery |
+
+## Deployment Status
+
+This artifact uses **fake quantization**:
+
+```text
+float weights + quantization scale/zero-point buffers
+```
+
+It is suitable for algorithm validation and workflow testing. It is not yet a packed INT runtime artifact.
+
+For production deployment, add a backend-specific export step:
+
+```text
+calibrated fake-quant artifact
+        ↓
+backend-specific packing/export
+        ↓
+compressed INT artifact + runtime kernel
+```
+
+## Limitations
+
+- Actual INT{w_bits} packing is not included in this artifact.
+- Kernel dispatch and backend-specific packed layout are out of scope for this checkpoint.
+- Hybrid multi-scheme quantization requires multiple `config_groups`; this model card assumes a single quantization group.
+- Calibration quality depends on the dataset, sequence length, and sample count used during compression.
+
+## Environment
+
+| Component | Requirement |
+|-----------|-------------|
+| Python | `>=3.11` |
+| PyTorch | `>=2.0` |
+| transformers | `>=4.40` |
+| safetensors | `>=0.4` |
+| CUDA | Optional for small tests, recommended for LLM-scale compression |
 """
 
     with open(os.path.join(save_dir, "README.md"), "w") as f:

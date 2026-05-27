@@ -418,7 +418,7 @@ python eval.py --ppl
 ## 테스트
 
 ```bash
-pytest tests/ -v
+uv run --extra dev python -m pytest tests/ -q
 ```
 
 | Test file | 검증 내용 |

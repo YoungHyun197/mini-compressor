@@ -1,6 +1,6 @@
 # mini-compressor 구현 진행 상황
 
-## 현재 날짜: 2026-05-18
+## 현재 날짜: 2026-05-23
 
 ---
 
@@ -120,7 +120,7 @@ Compressor([SmoothQuantModifier, QuantizationModifier(W8A8)]) chain 동작
 - [x] backward compatibility 유지 (이후 6-A 후속에서 `from_recipe`로 통일하며 `from_scheme` 제거)
 - [x] 동등성 단위 테스트 3개 추가 (`tests/test_smoothquant.py`)
 - [x] `demo.py`에 W8A8+SmoothQuant 옵션 추가
-- [x] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python demo.py --ppl`)
+- [x] W8A8 + SmoothQuant Qwen3-0.6B PPL 측정 (`python eval.py --ppl`)
   - W8A8 static 25.01 → W8A8 + SmoothQuant (dynamic) 21.08 (-3.93 개선)
   - refactor 회귀 확인 — W4A16/FP16/dynamic 기존 측정값과 일치
 
@@ -136,7 +136,7 @@ composition 패턴 위에 Quark식 선언적 preset 레이어 추가
 - [x] `Compressor.from_recipe(name, targets, ignore)` — 유일한 preset 진입점
 - [x] 단일 RTN(`w4a16`/`w8a8`/`w8a8_dynamic`)도 modifier 1개짜리 recipe로 흡수
 - [x] `w8a8_smoothquant` recipe — `[SmoothQuantModifier(0.5), QuantizationModifier(W8A8)]`
-- [x] `Compressor.from_scheme` 제거 — 진입점 중복 해소 (`SCHEME_REGISTRY`는 `serialize.py`용 카탈로그로 잔존)
+- [x] `Compressor.from_recipe` 제거 — 진입점 중복 해소 (`SCHEME_REGISTRY`는 `serialize.py`용 카탈로그로 잔존)
 - [x] `__init__.py` export 갱신, `demo.py` / `tests` `from_recipe` 마이그레이션 (단위 테스트 30개 통과)
 
 ---
@@ -210,7 +210,7 @@ targets/ignore 패턴 model-agnostic 검증
 - [x] TinyLlama-1.1B에서 `w4a16`/`w8a8`/`w8a8_dynamic`/`w8a8_smoothquant` 4종 compress → generate 확인
 - [x] `targets`/`ignore` 패턴이 Qwen3/LLaMA 공통 동작 — `lm_head` 제외, 154개 Linear 교체
 - [x] SmoothQuant `_find_smooth_pairs`가 LLaMA에서 44개 페어 자동 탐색 (RMSNorm, GQA 32:4)
-- [x] `demo.py`에 `--model` 인자 추가 — end-to-end 데모 model-agnostic
+- [x] `eval.py`에 `--model` 인자 추가 — end-to-end 평가 데모 model-agnostic
 - [x] `notebooks/milestone6d_llama_validation.ipynb` 검증 노트북 (실행 결과 포함)
 
 ---
@@ -228,7 +228,7 @@ targets/ignore 패턴 model-agnostic 검증
 ```
 serialize.py 구현 → compressor.py 구현 순서
 compressed-tensors 포맷 호환 quantization_config.json
-Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
+Compressor.from_recipe("w8a8").compress(model, dataloader) 원클릭 API
 ```
 
 #### 8-1. modifier.py 수정
@@ -253,7 +253,7 @@ Compressor.from_scheme("w8a8").compress(model, dataloader) 원클릭 API
 - [x] `tests/test_serialize.py` 6개 테스트 통과
 
 #### 8-3. compressor.py 구현
-- [x] `Compressor.from_scheme(scheme_name, targets=None, ignore=None)` — SCHEME_REGISTRY 조회, targets 파라미터 노출
+- [x] `Compressor.from_recipe(scheme_name, targets=None, ignore=None)` — SCHEME_REGISTRY 조회, targets 파라미터 노출
 - [x] `Compressor.compress(model, dataloader, num_samples=None)`
   - [x] `modifier.initialize()` → `modifier.calibrate()` → `modifier.finalize()` 순서 호출
   - [x] model 반환 (in-place 수정이지만 체이닝 가능하도록)
@@ -319,9 +319,9 @@ W8A8 / W4A16 측정 + 비교 표 → README 반영
 - [x] 측정 방식: sliding window perplexity (HF 공식 방식, wikitext-2-raw-v1 test split)
 - [x] FP16 baseline perplexity 측정 — 18.16
 - [x] W4A16 RTN perplexity 측정 — 25.89 (+7.73)
-- [x] W8A8 static perplexity 측정 — 25.01 (+6.85) _(dtype 버그 수정 후 재측정)_
 - [x] W8A8 dynamic perplexity 측정 — 18.48 (+0.32)
-- [x] W8A8 + SmoothQuant perplexity 측정 — 21.08 (+2.92) _(recipe W8A8_DYNAMIC 변경 후 재측정)_
+- [x] W8A8 static perplexity 측정 — 29.71 (+11.55) _(calibration: wikitext-2 128 samples. MinMax outlier 민감도로 dynamic 대비 큰 열화)_
+- [x] W8A8 + SmoothQuant perplexity 측정 — 18.33 (+0.17) _(calibration: wikitext-2 128 samples. 전체 scheme 중 최고 성능)_
 - [x] W4A16 GPTQ perplexity 측정 — 20.96 (+2.80) ← RTN 25.89 대비 -4.93 개선
 - [x] 비교 표 README에 추가
 
@@ -362,12 +362,13 @@ rank 0 저장 가드 (serialize.py) — 이미 적용됨
 
 ### Milestone 12 — End-to-End Demo
 ```
-demo.py 작성
+demo_quick.py / eval.py 작성
 세 scheme(W4A16 / W8A8 / W8A8-dynamic) compress → generate → save → load 전체 flow
 ```
-- [x] `demo.py` 작성
+- [x] `demo_quick.py` 작성 — 빠른 fake-quant generate smoke demo
+- [x] `eval.py` 작성
   - [x] W4A16: compress → generate 확인
-  - [x] W8A8 static: compress (calibration 5샘플) → generate 확인
+  - [x] W8A8 static: compress (calibration wikitext-2 128 samples) → generate 확인
   - [x] W8A8 dynamic: compress → generate 확인
   - [x] `--save DIR`: W4A16 save → load_pretrained → generate round-trip 확인
   - [x] `--ppl`: wikitext-2 sliding window perplexity 측정
@@ -408,6 +409,15 @@ demo.py 작성
 | Multi-GPU Observer 동기화 | **구현 완료** | MinMax: all_reduce(MIN/MAX). Percentile/MSE: histogram 기반 range all_reduce → resize → all_reduce(SUM). 모두 NCCL. gloo 2-proc 검증. |
 | HuggingFace Hub 업로드 | **구현 완료** | `Compressor.save_to_hub()` — 모델 카드 자동 생성 + `HfApi.upload_folder` |
 | Multi-model 검증 | **완료** | TinyLlama-1.1B (LLaMA 아키텍처) — 라이브러리 코드 수정 없이 4 recipe 동작 |
+
+---
+
+## 2026-05-23 — calibration 데이터 개선 + torch cu124 전환
+
+- **`mini_compressor/utils.py` 신규**: `get_calibration_data(tokenizer, dataset, n_samples, seq_len)` — wikitext-2/C4 train split에서 n_samples×seq_len 토큰 시퀀스 무작위 샘플링. GPTQ의 `_load_gptq_calib()`과 동일 방식을 공용 유틸로 일반화.
+- **`eval.py` / `demo/demo_smoothquant.py`**: W8A8 static, W8A8+SmoothQuant calibration을 5개 하드코딩 문장 → wikitext-2 128 samples로 교체. 전체 scheme이 동일 품질 calibration 데이터 사용.
+- **torch 2.12.0+cu130 → 2.6.0+cu124**: RTX 3060 Ti 드라이버(CUDA 12.6)와 호환되지 않던 cu130 빌드를 cu124로 교체. `pyproject.toml`에 pytorch-cu124 index 추가, `uv.lock` 갱신. nvidia-cudnn-cu12 등 바이너리 패키지 재설치로 CUDA 정상 동작 확인.
+- **PPL 재측정 결과**: W8A8+SmoothQuant 21.08 → 18.33 (FP16 대비 +0.17로 개선), W8A8 static 29.71 (MinMax outlier 민감도).
 
 ---
 

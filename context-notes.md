@@ -22,7 +22,8 @@ mini_compressor/
   compressor.py          — Compressor (modifier list 수용, from_recipe/compress/save, save_to_hub 실구현)
   serialize.py           — save_pretrained / load_pretrained (compressed-tensors 호환)
 
-demo.py                  — W4A16 / W8A8 / W8A8-dynamic / W8A8+SmoothQuant end-to-end 데모 (--model, --save, --ppl 옵션)
+demo_quick.py            — 빠른 fake-quant generate smoke demo (--recipe로 RECIPE_REGISTRY 선택)
+eval.py                  — W4A16 / GPTQ / W8A8 / SmoothQuant 평가 데모 (--model, --save, --ppl 옵션)
 ```
 
 ---
@@ -143,11 +144,11 @@ activation: None
 | M9 | README.md | 완료 |
 | M10 | presentation/slides.md, script.md | 완료 |
 | M11 | notebooks/milestone11_perplexity.ipynb | 완료 |
-| M12 | demo.py | 완료 |
+| M12 | demo_quick.py, eval.py | 완료 |
 | M6-A | modifiers/smoothquant.py (+ modifiers/ 패키지 분리) | 완료 |
 | M6-A 후속 | recipes.py (from_recipe 단일 진입점) | 완료 |
 | M13 | observer.py(sync 4종), tests/test_observer_sync.py | 완료 |
-| M6-D | demo.py(--model), notebooks/milestone6d_llama_validation.ipynb | 완료 |
+| M6-D | eval.py(--model), notebooks/milestone6d_llama_validation.ipynb | 완료 |
 
 단위 테스트: 39개 통과 (CI 연동)
 
@@ -215,7 +216,7 @@ for g in range(n_groups):
 ### 9. Compressor API — one-click 방식
 
 ```python
-compressor = Compressor.from_scheme("w8a8", ignore=["lm_head"])
+compressor = Compressor.from_recipe("w8a8", ignore=["lm_head"])
 compressor.compress(model, dataloader)  # initialize → calibrate → finalize 자동
 ```
 
@@ -353,7 +354,7 @@ W8A8_DYNAMIC = QuantizationScheme(
     weight=QuantizationSpec(granularity="per_channel", ...),
     activation=QuantizationSpec(granularity="per_token", dynamic=True, ...),
 )
-Compressor.from_scheme("w8a8_dynamic")  # 사용자는 preset만 알면 됨
+Compressor.from_recipe("w8a8_dynamic")  # 사용자는 preset만 알면 됨
 ```
 
 ### 18. dynamic=True 시 observer 미생성 및 calibrate() early return
@@ -456,7 +457,7 @@ stub 항목은 입출력 타입, 의도된 동작, 참고 논문을 docstring에
 - `BaseModifier` 추상 인터페이스 (`modifiers/base.py`): `initialize(model) / calibrate(dataloader, num_samples) / finalize()`.
 - `QuantizationModifier.__init__(scheme, ...)` — `compute_scales`를 생성자 인자로 이동. `initialize(model)`이 model을 받는 형태.
 - `Compressor.__init__(modifiers: list[BaseModifier])` — list 수용.
-- `Compressor.from_scheme(name, ...)` — 단일 `QuantizationModifier`로 감싸서 list 생성. **backward compat 유지**.
+- `Compressor.from_recipe(name, ...)` — 단일 `QuantizationModifier`로 감싸서 list 생성. **backward compat 유지**.
 - `Compressor.save()` — modifier list에서 `QuantizationModifier` 인스턴스를 찾아 그 scheme/ignore로 `save_pretrained` 호출.
 - `serialize.py:load_pretrained` — 새 시그니처에 맞춰 `QuantizationModifier(scheme, ignore=..., compute_scales=False)` + `modifier.initialize(model)`로 갱신.
 
@@ -563,9 +564,9 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 
 **근거**: 값이 늘어도 진입점은 영원히 하나 → API 표면적 불변, 이름 충돌 불가, "이건 scheme이냐 recipe냐" 판단을 사용자에게 안 떠넘김. llm-compressor도 recipe가 진입점, quantization config는 modifier 내부 부품인 구조.
 
-**마이그레이션**: `demo.py`(4곳), `tests/test_compressor.py`(5곳 + `test_from_scheme_unknown_raises` 제거), README → `from_recipe`. 단위 테스트 30개 통과.
+**마이그레이션**: 기존 demo 경로, `tests/test_compressor.py`(5곳 + `test_from_scheme_unknown_raises` 제거), README → `from_recipe`. 단위 테스트 30개 통과.
 
-**미수정**: `notebooks/milestone8_round_trip.ipynb`·`milestone11_perplexity.ipynb`은 `from_scheme`을 쓰지만 과거 실행 기록(출력 보존)이라 손대지 않음 — 재실행 시점에 갱신.
+**후속 갱신**: `notebooks/milestone8_round_trip.ipynb`·`milestone11_perplexity.ipynb`도 재실행 가능하도록 `from_recipe` 기준으로 갱신.
 
 ---
 
@@ -604,7 +605,7 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - `targets`/`ignore` model-agnostic — `lm_head`만 제외, 154개 Linear 교체.
 - 4개 recipe 모두 compress → generate 정상.
 
-**산출물**: `demo.py`에 `--model` 인자 추가(end-to-end 데모를 모델 비종속화), `notebooks/milestone6d_llama_validation.ipynb`(실행 결과 포함). 라이브러리 코드 변경 없음 — 이게 M6-D의 핵심 증거.
+**산출물**: `eval.py`에 `--model` 인자 추가(end-to-end 평가 데모를 모델 비종속화), `notebooks/milestone6d_llama_validation.ipynb`(실행 결과 포함). 라이브러리 코드 변경 없음 — 이게 M6-D의 핵심 증거.
 
 ## 2026-05-18 — weight observer 통합 (granularity-aware)
 

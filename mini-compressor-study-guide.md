@@ -30,15 +30,16 @@ mini_compressor/
     base.py             알고리즘 공통 계약 (lifecycle)
     quantization.py     RTN 알고리즘 (핵심 흐름)
     smoothquant.py      두 번째 알고리즘 (composition 입증)
-    gptq.py / awq.py    stub (확장 지점 명세)
+    gptq.py / awq.py    고급 PTQ 알고리즘 구현
   recipes.py            preset 레이어 (declarative)
   compressor.py         one-click 진입점
   serialize.py          HF 호환 저장/복원
-demo.py                 end-to-end 사용
+demo_quick.py           빠른 fake-quant generate 확인
+eval.py                 generate / save-load / perplexity 평가
 tests/                  설계 주장의 코드 증거
 ```
 
-권장 읽기 순서는 **의존성 방향**과 같다. 데이터(config) → 단위(module) → 통계(observer) → 알고리즘(modifier) → 조립(recipe·compressor) → 입출력(serialize) → 사용(demo·test). 아래에 있는 것이 위에 있는 것을 사용하므로, 위에서부터 읽어야 막힘이 없다.
+권장 읽기 순서는 **의존성 방향**과 같다. 데이터(config) → 단위(module) → 통계(observer) → 알고리즘(modifier) → 조립(recipe·compressor) → 입출력(serialize) → 사용(demo·eval·test). 아래에 있는 것이 위에 있는 것을 사용하므로, 위에서부터 읽어야 막힘이 없다.
 
 1. `schemes.py`
 2. `fake_quant_linear.py`
@@ -50,7 +51,7 @@ tests/                  설계 주장의 코드 증거
 8. `compressor.py`
 9. `serialize.py`
 10. `modifiers/gptq.py`, `modifiers/awq.py`
-11. `demo.py`, `tests/`
+11. `demo_quick.py`, `eval.py`, `tests/`
 
 # 1. schemes.py — 무엇을 양자화하는가
 
@@ -222,15 +223,17 @@ tests/                  설계 주장의 코드 증거
 
 # 10. gptq.py / awq.py — stub의 의미
 
-**역할** — 아직 구현되지 않았지만 인터페이스와 의도가 확정된 알고리즘.
+**역할** — W4A16이라는 같은 최종 scheme을 더 좋은 weight update / activation-aware scaling으로 얻기 위한 고급 PTQ 알고리즘.
 
-**무엇을 볼까** — 두 파일의 클래스 docstring, `NotImplementedError`, `BaseModifier` 상속 선언.
+**무엇을 볼까** — `GPTQModifier`의 Hessian 수집과 error propagation, `AWQModifier`의 activation mean 수집과 scaling search, 그리고 둘 다 `BaseModifier` lifecycle 안에 들어가는 방식.
 
-**습득할 개념** — stub은 게으름이 아니라 *명세*다. "확장 지점이 어디고, 변경 범위가 얼마인지"를 코드로 못박는다. GPTQ를 구현한다면 `modifiers/gptq.py`의 docstring 명세를 채우기만 하면 되고, 다른 파일은 건드리지 않는다. 면접에서 "새 알고리즘 추가 시 변경 범위"를 물으면 이 stub 파일을 가리키면 된다.
+**습득할 개념** — 새 알고리즘은 scheme 정의를 다시 만드는 일이 아니라, 필요한 통계와 model update를 `Modifier` 안에 격리하는 일이다. GPTQ는 Hessian, AWQ는 activation mean과 grid search가 필요하지만 `Compressor` orchestration은 그대로 유지된다.
 
-# 11. demo.py / tests/ — 사용과 증거
+# 11. demo_quick.py / eval.py / tests/ — 사용과 증거
 
-**demo.py** — end-to-end 데모. `--model` 인자로 모델 비종속이다(`Qwen3-0.6B` 기본, `TinyLlama` 등으로 교체 가능). FP16·W4A16·W8A8·W8A8-dynamic·W8A8+SmoothQuant 다섯 경우를 compress→generate하고, `--ppl`로 perplexity까지 측정한다.
+**demo_quick.py** — 제출 요구사항에 맞춘 빠른 fake-quant generate smoke demo. 기본 `w8a8` static을 포함해 `--recipe`로 `RECIPE_REGISTRY`의 모든 recipe를 선택할 수 있고, baseline generate와 fake-quant generate 문장을 바로 보여준다.
+
+**eval.py** — 평가용 데모. `--model` 인자로 모델 비종속이다(`Qwen3-0.6B` 기본, `TinyLlama` 등으로 교체 가능). FP16·W4A16·W4A16-GPTQ·W8A8·W8A8-dynamic·W8A8+SmoothQuant를 compress→generate하고, `--ppl`로 perplexity까지 측정한다.
 
 **tests/** — 32개 단위 테스트. 단순 회귀 방지를 넘어 *설계 주장을 코드로 못박는다*. `test_smoothquant.py`는 SmoothQuant가 양자화 없이는 출력을 보존하는 등가 변환임을 검증하고, `test_observer_sync.py`는 gloo 2-프로세스로 multi-GPU 동기화를 실제로 돌려 검증한다.
 

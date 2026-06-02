@@ -2,13 +2,13 @@
 
 부제 — 코드로 배우는 LLM Compression Tool 설계
 
-이 문서는 `github.com/YoungHyun197/mini-compressor` 저장소 하나만 가진 학생이, 코드와 주석을 따라 읽으며 설계 철학·트레이드오프·사용자/개발자 관점을 습득하도록 안내한다. 이 가이드를 끝까지 소화하면 FuriosaAI Quantization Engineer 과제 면접의 심화 질문에 코드 근거를 들어 답할 수 있어야 한다.
+이 문서는 `github.com/YoungHyun197/mini-compressor` 저장소 하나만 가진 학생이, 코드와 주석을 따라 읽으며 설계 철학·트레이드오프·사용자/개발자 관점을 습득하도록 안내한다. 이 가이드를 끝까지 소화하면 LLM compression tool 설계 리뷰의 심화 점검 항목에 코드 근거를 들어 답할 수 있어야 한다.
 
 읽는 법 — 각 절이 지목하는 파일을 직접 열고, 명시된 함수·클래스를 본문과 함께 읽어라. 가이드만 읽고 코드를 안 보면 절반만 얻는다.
 
 ## 이 프로젝트의 본질
 
-Furiosa 과제는 "양자화 알고리즘 하나를 구현하는 것"이 아니다. **LLM compression tool을 어떻게 설계할 것인가**를 보는 과제다. 평가의 초점은 다음에 있다.
+이 프로젝트는 "양자화 알고리즘 하나를 구현하는 것"에 그치지 않는다. **LLM compression tool을 어떻게 설계할 것인가**를 검증하는 POC다. 설계 초점은 다음에 있다.
 
 - Quantization 대상을 어떤 단위로 추상화했는가.
 - Quantization config를 어떻게 표현했는가.
@@ -69,7 +69,7 @@ tests/                  설계 주장의 코드 증거
 
 **트레이드오프** — 선언적 dataclass는 유연하지만 (1) 스키마가 표현하지 못하는 조합(예: 레이어별 mixed-precision)이 생기면 결국 필드를 늘려야 하고, (2) dataclass에는 검증 로직이 없어 잘못된 조합(group_size 없는 per_group 등)을 런타임까지 못 잡는다.
 
-**사용자 관점** — preset 이름(`"w8a8"`)만 알면 된다. 내부 Spec 필드를 몰라도 된다. **개발자 관점** — 새 수치 포맷 추가가 `schemes.py` 단일 파일로 제한된다. 이것이 뒤에 나올 "scheme 확장 범위" 면접 답변의 근거다.
+**사용자 관점** — preset 이름(`"w8a8"`)만 알면 된다. 내부 Spec 필드를 몰라도 된다. **개발자 관점** — 새 수치 포맷 추가가 `schemes.py` 단일 파일로 제한된다. 이것이 뒤에 나올 "scheme 확장 범위" 설계 설명의 근거다.
 
 # 2. fake_quant_linear.py — 어디에 양자화하는가
 
@@ -196,7 +196,7 @@ tests/                  설계 주장의 코드 증거
 - **modifier 리스트가 단일 진실 출처.** `Compressor`는 scheme을 따로 들고 있지 않는다. `save`가 필요할 때 modifier 리스트에서 `QuantizationModifier`를 찾아 그 scheme을 쓴다.
 - **compress의 동작.** 각 modifier에 대해 `initialize → calibrate → finalize`를 순서대로 호출한다. 리스트 순서가 곧 알고리즘 chain 순서다 — SmoothQuant가 먼저 weight를 변형하고, 그 위에서 Quantization이 RTN을 돈다.
 
-**왜 이렇게 설계했나** — `oneshot()`(llm-compressor), `quantize_model()`(Quark) 모두 원클릭 진입점을 제공한다. 한 줄 API는 발표 데모에서도 강력하다.
+**왜 이렇게 설계했나** — `oneshot()`(llm-compressor), `quantize_model()`(Quark) 모두 원클릭 진입점을 제공한다. 한 줄 API는 데모에서도 강력하다.
 
 **트레이드오프** — 각 modifier를 완전히(initialize~finalize) 끝낸 뒤 다음으로 넘어간다. llm-compressor의 진짜 recipe 스케줄러처럼 여러 modifier가 한 calibration 패스를 공유하지는 않는다. PTQ 범위에서는 충분하지만 QAT까지 가면 이 부분은 재설계가 필요하다 — 의도적으로 단순화한 지점이다.
 
@@ -210,7 +210,7 @@ tests/                  설계 주장의 코드 증거
 
 **습득할 개념**
 
-- **자체 포맷을 만들지 않는다.** `quantization_config.json`은 HF compressed-tensors 스펙(`config_groups`, `quant_type`)을 그대로 따른다. furiosa-llm·vLLM이 그대로 로드할 수 있는 포맷이 목표다.
+- **자체 포맷을 만들지 않는다.** `quantization_config.json`은 HF compressed-tensors 스펙(`config_groups`, `quant_type`)을 그대로 따른다. vLLM 등 runtime이 그대로 로드할 수 있는 포맷이 목표다.
 - **calibrated vs compressed.** `quantization_status: "calibrated"`는 fake quant 상태 — weight가 float16 그대로다. 실제 INT 패킹(`"compressed"`)은 컴파일러·런타임이 처리하는 다음 단계다. 툴체인 레이어 간 책임 분리다.
 - **왜 from_pretrained인가.** `load_pretrained`는 `from_config().to(float16)`이 아니라 원본 `from_pretrained(model_id)`로 base 모델을 만든다. 전자는 `inv_freq` 같은 non-persistent buffer를 float16으로 바꿔버려, 28개 attention 레이어를 거치며 logit 오차가 증폭되고 round-trip이 깨진다.
 - **왜 load_state_dict를 안 쓰나.** PyTorch의 `_load_from_state_dict`는 `None` buffer를 건너뛴다. `initialize(compute_scales=False)` 직후 scale buffer가 `None`이라 `copy_()`가 호출되지 않아 값 주입이 조용히 실패한다. 그래서 저장된 state를 직접 순회하며 parameter와 buffer에 할당한다.
@@ -250,11 +250,11 @@ mini-compressor는 한 OSS를 베끼지 않았다. 레이어별로 출처가 다
 | 진입점 (recipe) | llm-compressor | named recipe → modifier 리스트 |
 | module replacement | AMD Quark | parent setattr로 nn.Linear 교체 |
 | 선언적 config 객체 | AMD Quark 정신 | QuantizationScheme 2-tier |
-| weight 포맷 | Furiosa 정렬 | fake quant float16, real packing은 compiler |
+| weight 포맷 | backend 경계 분리 | fake quant float16, real packing은 compiler/runtime 단계 |
 
 **composition vs config-dispatch.** llm-compressor는 알고리즘마다 Modifier 클래스를 두고 recipe로 조합한다(composition). Quark는 중앙 config 객체를 두고 quantizer가 분기한다(config-dispatch). 전자는 확장이 깔끔하지만 사용자가 조합을 알아야 하고, 후자는 쓰기 쉽지만 확장 시 중앙을 건드린다. mini-compressor는 composition을 메인으로 택하되, "어떤 수치 포맷이냐"는 Quark식 선언적 `QuantizationScheme`으로 분리한 하이브리드다.
 
-**핵심 3문답** — 면접에서 가장 집중적으로 묻는 부분이다.
+**핵심 설계 항목** — 설계 검토에서 가장 집중적으로 묻는 부분이다.
 
 1. **추상화 단위는?** `nn.Linear`를 대체하는 `FakeQuantLinear`. LLM 계산이 Linear에 집중되고, module replacement가 state_dict 호환과 generate 경로 통합에 자연스럽기 때문.
 2. **config는 어떻게 표현했나?** `QuantizationSpec`(텐서 수준) + `QuantizationScheme`(weight·activation 쌍)의 2-tier. 새 scheme은 dataclass 한 줄.
@@ -274,9 +274,9 @@ mini-compressor는 한 OSS를 베끼지 않았다. 레이어별로 출처가 다
 | multi-GPU all_gather sync | compute 코드 무수정, 정확 | 메모리 rank 배 |
 | 순차 modifier 실행 | 흐름 단순, 디버깅 명확 | calibration 패스 공유 안 함 (QAT엔 재설계) |
 
-# 14. 면접 심화 질문 대비
+# 14. 심화 점검 항목 대비
 
-아래 질문에 코드 근거를 들어 답할 수 있어야 한다.
+아래 항목을 코드 근거와 함께 설명할 수 있어야 한다.
 
 **Q. 양자화 단위를 왜 nn.Linear로 잡았나? 대안과 트레이드오프는?**
 LLM 계산량이 attention·MLP의 Linear에 집중되고, module replacement 방식이 모델 코드 수정 없이 generate 경로에 들어가며 scale을 buffer로 저장할 수 있다. tensor-level quantizer는 유연하지만 state_dict에 scale이 독립 key로 안 남고, decoder-layer wrapper는 모델별로 달라진다. nn.Linear 교체가 granularity와 호환성의 균형점이다.
@@ -317,7 +317,7 @@ weight는 offline 고정이라 channel·group 단위 scale을 저장해도 overh
 **Q. quantization_status의 calibrated와 compressed 차이는?**
 `calibrated`는 fake quant 상태 — weight가 float16, scale buffer가 함께 저장된다. `compressed`는 실제 INT 패킹이 끝난 상태다. mini-compressor는 정확도 검증 단계(calibrated)에 집중하고, real packing은 컴파일러·런타임의 책임으로 분리했다.
 
-# 15. 면접 심화 질문 — 추가 20선
+# 15. 심화 점검 항목 — 추가 20선
 
 앞 절의 13문에 더해, 코드를 깊게 읽어야 답할 수 있는 20문을 더한다. 모든 답은 실제 파일·함수에 근거를 둔다.
 

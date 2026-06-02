@@ -1,10 +1,10 @@
-# FuriosaAI Quantization Engineer 과제 준비 로드맵
+# LLM Compression Tool 설계 로드맵
 
 ## 0. 전체 방향성
 
-이 과제는 단순히 “LLM quantization 코드를 하나 구현하는 것”이 아니라, **LLM Compression Tool을 어떻게 설계할 것인가**를 보는 과제다.
+이 프로젝트는 단순히 “LLM quantization 코드를 하나 구현하는 것”이 아니라, **LLM Compression Tool을 어떻게 설계할 것인가**를 검증하는 POC다.
 
-핵심 평가 포인트는 다음이다.
+핵심 설계 포인트는 다음이다.
 
 - Quantization Unit을 무엇으로 정의할 것인가?
 - Quantization config를 어떻게 표현할 것인가?
@@ -19,7 +19,7 @@
 
 ## 1. 최종 산출물부터 정의하기
 
-먼저 과제의 목표물을 명확히 고정한다.
+먼저 프로젝트의 목표물을 명확히 고정한다.
 
 ```text
 입력 (타깃 모델):
@@ -34,7 +34,7 @@
     2. RTN (Round-to-Nearest) — W4A16 scheme
          weight: per-group observer(기본 MinMax), activation: FP16 passthrough
        ※ W8A8과 W4A16은 동일 알고리즘(RTN)의 다른 config이므로,
-         과제 요건 "2개 이상의 양자화 기법" 충족을 위해 아래 추가 기법 구현 권장
+         프로젝트 요구사항 "2개 이상의 양자화 기법" 충족을 위해 아래 추가 기법 구현 권장
 
   시간 허락 시 추가:
     3. SmoothQuant — W8A8 + activation-weight channel rebalancing pre-processing
@@ -57,7 +57,7 @@ Scalability 설계:
     → 구현 여부는 별도 논의 후 결정
 ```
 
-과제의 본질은 최고 성능 알고리즘 구현이 아니라, **OSS 생태계와 호환 가능한 compression tool의 설계와 POC**다.
+프로젝트의 본질은 최고 성능 알고리즘 구현이 아니라, **OSS 생태계와 호환 가능한 compression tool의 설계와 POC**다.
 
 ---
 
@@ -66,7 +66,7 @@ Scalability 설계:
 추천 학습 순서는 다음과 같다.
 
 ```text
-1. 과제 요구사항 재정의
+1. 프로젝트 요구사항 재정의
 2. PyTorch nn.Module / state_dict / buffer / module replacement
 3. quantization 기본 수식
 4. fake quant vs real quant
@@ -77,7 +77,7 @@ Scalability 설계:
 9. Quark template/preset 구조 이해
 10. serialization / quant_config 이해
 11. 최소 end-to-end 구현
-12. README와 발표용 design rationale 정리
+12. README와 문서화용 design rationale 정리
 ```
 
 ---
@@ -86,7 +86,7 @@ Scalability 설계:
 
 가장 먼저 볼 것은 GPTQ/AWQ 논문이 아니라 **PyTorch module system**이다.
 
-과제의 핵심 질문은 결국 다음이다.
+프로젝트의 핵심 설계 포인트은 결국 다음이다.
 
 > Quantization 대상을 어떤 단위로 추상화할 것인가?
 
@@ -156,7 +156,7 @@ per-group:
   group_size 단위로 scale 하나
 ```
 
-면접에서 중요한 질문은 다음이다.
+설계 검토에서 중요한 설계 포인트는 다음이다.
 
 > 왜 weight는 per-channel/per-group을 쓰고, activation은 per-tensor를 쓰는가?
 
@@ -172,7 +172,7 @@ activation은 runtime input에 따라 변하고 매 token마다 계산되므로 
 
 ## 5. 3단계: Fake Quantization과 Real Quantization 차이
 
-과제는 fake quantize 기반 generate 동작을 허용한다.  
+프로젝트는 fake quantize 기반 generate 동작을 허용한다.  
 즉, 반드시 int4 kernel이나 real packed weight를 구현할 필요는 없다.
 
 ### Fake Quantization
@@ -203,7 +203,7 @@ x_fake = q * scale
 - hardware-specific kernel 효과 검증 불가
 ```
 
-면접 답변 예시:
+설계 설명 예시:
 
 ```text
 이번 POC에서는 end-to-end workflow와 software abstraction 검증이 목적이므로 fake quantization으로 generate 동작을 보장했습니다. 다만 serialization metadata와 QuantLinear abstraction은 추후 real packed weight나 NPU backend kernel로 교체 가능한 형태로 설계했습니다.
@@ -280,9 +280,9 @@ DecoderLayer -> QuantizedDecoderLayer
 
 ### 추천 선택
 
-과제에서는 **B. nn.Linear 대체 module**을 추천한다.
+프로젝트에서는 **B. nn.Linear 대체 module**을 추천한다.
 
-면접 답변 예시:
+설계 설명 예시:
 
 ```text
 저는 quantization unit을 nn.Linear 단위로 정의했습니다. LLM에서 projection, MLP, output projection의 대부분이 Linear로 구성되어 있고, weight/activation quantization을 적용하기에 가장 자연스러운 단위이기 때문입니다. Tensor 단위 quantizer는 내부 component로 두고, workflow 관점에서는 Linear module을 wrapper로 교체하는 방식을 택했습니다. 이렇게 하면 scale과 zero-point를 module buffer로 저장할 수 있고, save/load 및 generate path와도 잘 연결됩니다.
@@ -292,7 +292,7 @@ DecoderLayer -> QuantizedDecoderLayer
 
 ## 7. 5단계: Config / Scheme 설계
 
-과제에서는 bit-width, dtype, granularity, symmetric 여부 등을 어떻게 config로 표현할지 봐야 한다.
+프로젝트에서는 bit-width, dtype, granularity, symmetric 여부 등을 어떻게 config로 표현할지 봐야 한다.
 
 추천 dataclass 구조:
 
@@ -381,7 +381,7 @@ W8A8_DYNAMIC = QuantizationScheme(
 
 ## 8. 6단계: Workflow 설계
 
-과제에서 요구하는 workflow는 다음이다.
+프로젝트에서 요구하는 workflow는 다음이다.
 
 ```text
 1. HuggingFace model ID로부터 모델 load
@@ -467,7 +467,7 @@ scheme.activation is None 여부로 분기
 observer 제거 (llm-compressor식 cleanup)
 scale/zero_point를 FakeQuantLinear buffer로 고정
 state_dict에 observer 잔여물 남기지 않음
-Furiosa compiler 입력으로 바로 사용 가능한 깔끔한 weight + scale buffer만 남김
+backend compiler 입력으로 바로 사용 가능한 깔끔한 weight + scale buffer만 남김
 ```
 
 > **예외 안전성**: `Compressor.compress()`는 `calibrate()`를 `try/finally`로 감싸 예외 발생 시에도
@@ -487,7 +487,7 @@ FP output과 비교해서 quantization degradation 확인
 model.save_pretrained()
 tokenizer.save_pretrained()
 quantization_config.json 저장 (HF 호환 포맷)
-furiosa-llm / vllm이 그대로 로드 가능
+vLLM 등 runtime이 그대로 로드 가능
 ```
 
 ---
@@ -541,7 +541,7 @@ Quark에서 차용하지 않는 것: quantize() 일괄 처리 방식
 ```text
 사용자-facing API:
   HF 호환 — save_pretrained / quantization_config.json
-  (furiosa-llm, vllm이 그대로 로드 가능한 포맷)
+  (vLLM 등 runtime과 정렬 가능한 포맷)
   출처: llm-compressor / HF compressed-tensors 스펙
 
 내부 core:
@@ -555,9 +555,8 @@ Quark에서 차용하지 않는 것: quantize() 일괄 처리 방식
 
 즉, hybrid design이 가장 설득력 있다.
 
-근거: Furiosa는 사용자에게 HF 표준 인터페이스를 노출하고 내부 컴파일러 단계에서
-module replacement + explicit export 철학을 사용한다.
-mini-compressor의 설계 방향이 이와 정렬되어 있음을 발표에서 직접 언급할 수 있다.
+근거: 사용자에게는 HF 표준 인터페이스를 제공하고, 내부적으로는 module replacement와 명시적 artifact metadata를 유지하는 구조가
+OSS compression tool의 실용적인 확장 방향과 잘 맞는다.
 
 ---
 
@@ -565,11 +564,10 @@ mini-compressor의 설계 방향이 이와 정렬되어 있음을 발표에서 �
 
 ### 설계 철학: HF 표준 포맷을 따른다
 
-자체 포맷을 만들지 않는다. furiosa-llm / vllm이 그대로 로드 가능한 포맷이 목표이고,
-그 표준은 HuggingFace의 `quantization_config` 스펙이다.
+자체 포맷을 과도하게 만들지 않는다. vLLM 등 runtime과 정렬 가능한 포맷을 목표로 하고,
+그 기준점은 HuggingFace의 `quantization_config`와 compressed-tensors 계열 메타데이터다.
 
-Furiosa llm 공식 문서에 HF 호환 우선순위 명시, compressed-tensors 지원 예정이 확인됨.
-따라서 `quant_type: "compressed-tensors"` 포맷을 그대로 준수한다.
+따라서 `quant_type: "compressed-tensors"` 형태의 메타데이터를 사용해, 향후 정식 export backend로 확장 가능한 구조를 남긴다.
 
 ---
 
@@ -605,7 +603,7 @@ HF 표준 스펙을 따른다. compressed-tensors 포맷을 준수한다.
 ```
 
 **결정 근거:**
-- `quant_type`: `"compressed-tensors"` — furiosa-llm 자동 호환 목표. `"mini-compressor"` 같은 자체 문자열은 쓰지 않는다.
+- `quant_type`: `"compressed-tensors"` — HF / compressed-tensors 생태계와의 정렬 목표. `"mini-compressor"` 같은 자체 문자열은 쓰지 않는다.
 - `quantization_status`: `"calibrated"` — fake quant 상태는 weight가 float16 그대로. `"compressed"`는 real int packing 완료 시 사용.
 - `targets`: `["Linear"]` — 클래스 이름. fnmatch 패턴이 아닌 compressed-tensors 스펙 준수.
 - `input_activations`: W4A16처럼 activation 없으면 `null` **명시**. 필드 생략하지 않는다.
@@ -636,7 +634,7 @@ compressor.compress(model, dataloader)  # initialize → calibrate → finalize 
 
 내부에서 `QuantizationModifier`를 생성하고 3단계를 순서대로 호출한다.
 llm-compressor의 `oneshot()`, Quark의 `quantizer.quantize_model()` 모두 이 원클릭 진입점을 제공함.
-발표 데모 관점에서도 한 줄 API가 설명력이 강하다.
+데모 관점에서도 한 줄 API가 설명력이 강하다.
 
 > **후속 (recipe preset 레이어로 통일)**: 처음엔 `from_scheme`(단일 scheme)만 있었으나,
 > SmoothQuant처럼 여러 modifier가 chain되는 알고리즘은 한 줄로 표현되지 않았다.
@@ -731,14 +729,14 @@ fake quant는 dtype이 float16 그대로이므로 `weight`로 저장해도 HF �
 
 ---
 
-면접 답변 예시:
+설계 설명 예시:
 
 ```text
 HF 표준 quantization_config 포맷을 따랐습니다. compressed-tensors 스펙을 참조해
 config_groups 구조로 scheme을 표현했고, state_dict는 scale/zero_point를
 FakeQuantLinear 직속 buffer로 저장해 from_pretrained로 바로 복원 가능합니다.
 fake quant 상태이므로 weight dtype은 float16을 유지했고,
-real int packing은 Furiosa compiler 단계에서 처리됩니다.
+real int packing은 backend compiler 단계에서 처리됩니다.
 ```
 
 ---
@@ -860,7 +858,7 @@ unit test 7개: preserves_forward_output, layernorm_bias, initialize_required, e
 5. frozen=True (schemes.py)
    QuantizationSpec, QuantizationScheme 불변 객체로 명시
    slides.md "Scheme = frozen dataclass" 주장과 코드 일치
-발표자료(slides.md, script.md) 최신화: from_recipe API, 구현 알고리즘 현황, 6종 PPL 표
+설계 문서(slides.md, script.md) 최신화: from_recipe API, 구현 알고리즘 현황, 6종 PPL 표
 ```
 
 ### Milestone 7 ✅ (M5와 병합 완료 — 2026-05-11)
@@ -893,7 +891,7 @@ README 작성 (설치법, 실행법, 지원 scheme, 설계 설명, limitation)
 ### Milestone 10
 
 ```text
-발표자료 작성
+설계 문서 작성
 trade-off 정리
 known limitation 정리
 ```
@@ -974,7 +972,7 @@ notebooks/demo.ipynb 작성
 
 ## 12. 15 Working Days 학습/구현 플랜
 
-### Day 1: 과제 분석 + PyTorch module replacement
+### Day 1: 프로젝트 분석 + PyTorch module replacement
 
 목표:
 
@@ -1123,7 +1121,7 @@ lm-eval-harness 연동 + FP / W8A8 / W4A16 perplexity 측정
 ```text
 notebooks/demo.ipynb 작성
 Compressor.from_recipe() → generate → save → lm-eval 전체 flow 재현
-노트북 한 파일에서 발표 demo 가능한 상태로 완성
+노트북 한 파일에서 데모 가능한 상태로 완성
 ```
 
 ### Day 13.5 (여유): CI/CD 점검
@@ -1135,21 +1133,21 @@ Compressor.from_recipe() → generate → save → lm-eval 전체 flow 재현
 .github/workflows/ 최종 정리
 ```
 
-### Day 14: 발표자료 초안
+### Day 14: 설계 문서 초안
 
 목표:
 
 ```text
 Problem
 OSS study
-Design (핵심 3문답: 추상화 단위 / Config 표현 / scheme 확장 범위)
+Design (핵심 설계 항목: 추상화 단위 / Config 표현 / scheme 확장 범위)
 Implementation
 Demo (notebooks/demo.ipynb)
 Trade-off
 Future work
 ```
 
-### Day 14.5: 예상 질문 답변
+### Day 14.5: 설계 검토 항목 정리
 
 목표:
 
@@ -1167,9 +1165,9 @@ NPU 최적화와 어떻게 연결?
 목표:
 
 ```text
-30분 발표 연습
+30분 문서 리뷰
 코드 walkthrough 연습
-Q&A 압박질문 대비
+edge-case 설계 점검
 ```
 
 ---
@@ -1404,10 +1402,10 @@ single GPU / multi-GPU 환경 모두 동작하는 패턴이다.
 ### 나쁜 방식
 
 ```text
-Furiosa quantization 과제 전체 구현해줘.
+LLM quantization 프로젝트 전체 구현해줘.
 ```
 
-이렇게 하면 과제는 나올 수 있지만, 본인 설계가 아니어서 발표면접에서 취약하다.
+이렇게 하면 프로젝트는 나올 수 있지만, 본인 설계가 아니어서 설계 설명에서 취약하다.
 
 ### 좋은 방식
 
@@ -1430,9 +1428,9 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 
 ---
 
-## 16. 반드시 답할 수 있어야 하는 질문
+## 16. 반드시 설명할 수 있어야 하는 항목
 
-공부와 구현을 진행하면서 아래 질문에 답할 수 있어야 한다.
+공부와 구현을 진행하면서 아래 항목을 설명할 수 있어야 한다.
 
 ```text
 1. 왜 quantization unit을 nn.Linear로 잡았나?
@@ -1447,10 +1445,10 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 10. 새로운 scheme을 추가하면 어떤 파일을 수정해야 하는가?
 11. module replacement 방식(Quark식)의 장점은 무엇인가? hook 방식과 무엇이 다른가?
 12. finalize에서 observer를 제거하는 이유는? FrozenFakeQuantize 방식과 무엇이 다른가?
-13. 사용자 API는 HF 호환, module replacement는 Quark식, lifecycle 구조는 llm-compressor식으로 가져갔는데 왜 이렇게 섞였는가? Furiosa 실무와 어떻게 정렬되는가?
+13. 사용자 API는 HF 호환, module replacement는 Quark식, lifecycle 구조는 llm-compressor식으로 가져갔는데 왜 이렇게 섞였는가? production deployment와 어떻게 정렬되는가?
 14. NPU-specific optimization은 이 구조에서 어디에 들어갈 수 있는가?
 15. 실제 speedup이 안 나는 fake quant POC의 한계는 무엇인가?
-16. W8A8과 W4A16이 모두 RTN인데, 과제 요건 "2개 이상의 양자화 기법"을 어떻게 충족하는가?
+16. W8A8과 W4A16이 모두 RTN인데, 프로젝트 요구사항 "2개 이상의 양자화 기법"을 어떻게 충족하는가?
 17. SmoothQuant가 해결하는 문제는 무엇인가? RTN W8A8 대비 perplexity가 왜 개선되는가?
 18. GPTQ가 RTN보다 나은 이유는? Hessian이 왜 필요한가?
 19. SmoothQuant와 GPTQ 모두 `modifiers/`에 새 파일 하나 추가로 끝나는데, 이것이 설계상 무엇을 보여주는가? (`fake_quant_linear.py`, `schemes.py`, `serialize.py` 변경 없음으로 입증됨)
@@ -1461,18 +1459,18 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 
 ---
 
-## 17. 발표 핵심 3문답 — 설계 의도와 trade-off
+## 17. 설계 핵심 설계 항목 — 설계 의도와 trade-off
 
-> 면접관이 가장 집중해서 보는 부분. 이 세 가지에 대해 막힘 없이 답할 수 있어야 한다.
+> 설계 검토에서 가장 중요한 부분. 이 세 가지에 대해 막힘 없이 답할 수 있어야 한다.
 
 ---
 
-### 문답 1: Quantization 대상을 어떤 단위로 추상화했는가?
+### 항목 1: Quantization 대상을 어떤 단위로 추상화했는가?
 
-**질문 형태:**
+**검토 포인트:**
 > "Quantization 대상을 어떤 단위로 추상화했나요? 그 선택의 근거는 무엇인가요?"
 
-**답변 구조:**
+**설명 구조:**
 
 ```text
 선택: nn.Linear를 대체하는 custom module (FakeQuantLinear)
@@ -1496,12 +1494,12 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 
 ---
 
-### 문답 2: Config를 어떻게 표현했는가?
+### 항목 2: Config를 어떻게 표현했는가?
 
-**질문 형태:**
+**검토 포인트:**
 > "Quantization config를 어떻게 표현하셨나요? bit-width, dtype, granularity, symmetric 여부를 어떻게 다루나요?"
 
-**답변 구조:**
+**설명 구조:**
 
 ```text
 2-tier 설계:
@@ -1532,12 +1530,12 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 
 ---
 
-### 문답 3: 새로운 scheme 추가 시 변경 범위는?
+### 항목 3: 새로운 scheme 추가 시 변경 범위는?
 
-**질문 형태:**
+**검토 포인트:**
 > "새로운 quantization scheme이 들어오면 어떤 부분을 수정해야 하나요? 변경 범위가 얼마나 제한되나요?"
 
-**답변 구조:**
+**설명 구조:**
 
 ```text
 예시: W8A8FP (float8 activation) scheme을 추가하는 경우
@@ -1573,14 +1571,14 @@ AI는 **작성자**가 아니라 **코드 리뷰어 / 디버거 / 문서화 보�
 
 ---
 
-## 18. 발표에서 강조할 핵심 문장
+## 18. 문서에서 강조할 핵심 문장
 
 ```text
-이번 과제에서는 단순히 특정 quantization algorithm을 구현하기보다, 새로운 scheme과 model architecture가 추가되어도 변경 범위를 제한할 수 있는 compression tool 구조를 설계하는 데 집중했습니다.
+이번 프로젝트에서는 단순히 특정 quantization algorithm을 구현하기보다, 새로운 scheme과 model architecture가 추가되어도 변경 범위를 제한할 수 있는 compression tool 구조를 설계하는 데 집중했습니다.
 ```
 
 ```text
-내부 core의 module replacement 메커니즘은 Quark식으로 설계했고, lifecycle 구조(initialize/calibrate/finalize 3단계 명시적 분리)는 llm-compressor식을 따랐습니다. 사용자 API는 HF 호환 save_pretrained + quantization_config.json으로 맞췄습니다. Furiosa가 실제로 취하는 quantize → compile → serve 파이프라인과 정렬한 설계 결정입니다.
+내부 core의 module replacement 메커니즘은 Quark식으로 설계했고, lifecycle 구조(initialize/calibrate/finalize 3단계 명시적 분리)는 llm-compressor식을 따랐습니다. 사용자 API는 HF 호환 save_pretrained + quantization_config.json으로 맞췄습니다. 일반적인 backend deployment에서 요구되는 quantize → compile → serve 파이프라인과 정렬한 설계 결정입니다.
 ```
 
 ```text
@@ -1603,4 +1601,4 @@ Quantization Unit은 LLM의 주요 연산 단위인 nn.Linear로 정의했고, �
 
 한 문장 요약:
 
-> 이 과제의 핵심은 “양자화 알고리즘을 아는 사람”이 아니라, **LLM quantization을 실제 compression software stack으로 구조화할 수 있는 사람**임을 보여주는 것이다.
+> 이 프로젝트의 핵심은 “양자화 알고리즘을 아는 사람”이 아니라, **LLM quantization을 실제 compression software stack으로 구조화할 수 있는 사람**임을 보여주는 것이다.

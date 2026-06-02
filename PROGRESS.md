@@ -294,16 +294,16 @@ README 작성 (설치법, 실행법, 지원 scheme, 설계 설명, limitation)
 
 ---
 
-### Milestone 10 — 발표자료 + trade-off 정리
+### Milestone 10 — 설계 문서 + trade-off 정리
 ```
-발표자료 작성
+설계 문서 작성
 trade-off 정리
 known limitation 정리
 ```
-> 산출물. `presentation/slides.md` (13슬라이드 + Q&A backup), `presentation/script.md` (30분 발표 스크립트 + Q&A 풀텍스트).
+> 산출물. `presentation/slides.md`와 `presentation/script.md`에 설계 rationale과 trade-off를 정리.
 
 - [x] 설계 철학 슬라이드 (Slide 2 "Why this design?", Slide 3 OSS 차용 매핑)
-- [x] 핵심 3문답 답변 준비 (Slide 4-6: 추상화 단위 / Config 표현 / scheme 확장 범위)
+- [x] 핵심 설계 항목 설명 항목 정리 (Slide 4-6: 추상화 단위 / Config 표현 / scheme 확장 범위)
 - [x] 각 결정의 근거 + trade-off (Slide 9 책임 분리, Slide 12 trade-off 표)
 - [x] known limitation (Slide 12 — fake quant 한계, packing 미지원, multi-model 미검증)
 
@@ -477,7 +477,7 @@ demo_quick.py / eval.py 작성
 | 사용자 API | HF / llm-compressor | `save_pretrained`, `quantization_config.json` |
 | 내부 동작 | AMD Quark | module replacement, initialize→calibrate→finalize |
 | finalize 방식 | llm-compressor | observer 제거, scale buffer만 남김 |
-| weight 포맷 | Furiosa 정렬 | fake quant 상태 float16 저장, real packing은 compiler가 담당 |
+| weight 포맷 | backend 경계 분리 | fake quant 상태 float16 저장, real packing은 compiler/runtime 단계가 담당 |
 
 ---
 
@@ -494,9 +494,9 @@ demo_quick.py / eval.py 작성
 
 ---
 
-## 과제 명세서 가점 요소 현황
+## 프로젝트 요구사항 확장 요소 현황
 
-| 가점 항목 | 상태 | 비고 |
+| 확장 항목 | 상태 | 비고 |
 |-----------|------|------|
 | serialization 포맷 설계 (quantization config 등) | **완료** | compressed-tensors 포맷 호환 `quantization_config.json`, `save_pretrained`/`load_pretrained` 구현 |
 | HuggingFace Hub model card upload 가능한 구조 | **완료** | `save_to_hub(model, repo_id)` — model card 자동 생성 + `HfApi.upload_folder`. `pip install mini-compressor[hub]`로 선택 의존성 설치 |
@@ -504,7 +504,7 @@ demo_quick.py / eval.py 작성
 
 ---
 
-## Multi-GPU 가산점 요소
+## Multi-GPU 확장 요소
 
 > **M13에서 구현 완료** — observer `sync()` 4종 + gloo 2-proc 검증. 아래는 항목별 상태.
 

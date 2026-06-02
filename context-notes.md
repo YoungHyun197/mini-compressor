@@ -35,7 +35,7 @@ eval.py                  — W4A16 / GPTQ / W8A8 / SmoothQuant 평가 데모 (--
 `weight_scale`, `weight_zero_point`, `input_scale`, `input_zero_point`를 모두 직속 buffer로 보유.
 
 - **이유**: `_weight_quantizer.scale` 같은 중첩 경로 대신 flat key로 state_dict를 단순하게 유지. HF save/load 시 key 매핑이 명확해짐.
-- **참고**: Furiosa llm-compressor 스타일.
+- **참고**: llm-compressor 스타일의 flat qparam 저장 방식.
 
 ### 2. observer — activation은 FakeQuantLinear, weight는 modifier가 소유
 
@@ -220,7 +220,7 @@ compressor = Compressor.from_recipe("w8a8", ignore=["lm_head"])
 compressor.compress(model, dataloader)  # initialize → calibrate → finalize 자동
 ```
 
-llm-compressor의 `oneshot()`, Quark의 `quantizer.quantize_model()` 모두 원클릭 진입점을 제공함. 발표 데모 관점에서도 한 줄이 강함.
+llm-compressor의 `oneshot()`, Quark의 `quantizer.quantize_model()` 모두 원클릭 진입점을 제공함. 데모 관점에서도 한 줄이 강함.
 
 내부에서 `QuantizationModifier`를 생성하고 3단계를 순서대로 호출. Modifier 구조는 그대로 유지.
 
@@ -232,9 +232,9 @@ llm-compressor의 `oneshot()`, Quark의 `quantizer.quantize_model()` 모두 원�
 - `serialize.py`가 "어떻게 저장하는가" 담당
 - `schemes.py`에 `to_dict()` / `from_dict()` 추가하지 않음
 
-### 11. quantization_config.json — compressed-tensors 포맷 준수
+### 11. quantization_config.json — compressed-tensors 스타일 메타데이터
 
-Furiosa-llm이 HF 호환 + compressed-tensors 지원 예정이므로 해당 스펙을 그대로 따름.
+HF / compressed-tensors 생태계와의 호환성을 염두에 두고 config group, target, qparam metadata를 명시적으로 저장한다.
 
 ```json
 {
@@ -264,7 +264,7 @@ Furiosa-llm이 HF 호환 + compressed-tensors 지원 예정이므로 해당 스�
 ```
 
 결정 사항:
-- `quant_type`: `"compressed-tensors"` (Furiosa-llm 로드 시 자동 호환 목표)
+- `quant_type`: `"compressed-tensors"` (HF / compressed-tensors 생태계와의 정렬 목표)
 - `quantization_status`: `"calibrated"` — fake quant는 weight가 float16 그대로. `"compressed"`는 real int packing 완료 시.
 - `targets`: `["Linear"]` — 클래스 이름. fnmatch 패턴 아님. compressed-tensors 스펙 준수.
 - `input_activations`: W4A16처럼 activation 없으면 `null` 명시. 필드 생략하지 않음.
@@ -464,7 +464,7 @@ stub 항목은 입출력 타입, 의도된 동작, 참고 논문을 docstring에
 **근거 (왜 composition pattern?):**
 - 조합 표현: `[SmoothQuantModifier, QuantizationModifier(W4A16)]`, `[SmoothQuantModifier, GPTQModifier(W4A16)]` 같은 chain을 list 순서로 자연스럽게 표현.
 - 변경 범위 제한: 새 알고리즘 = `modifiers/<algo>.py` 한 파일 추가. 기존 modifier 무수정.
-- 면접 답변 강화: road_map 17.3, 19번 질문 ("새 알고리즘 추가 시 변경 범위") 답변이 "새 파일 추가만"으로 강화됨.
+- 설계 설명 강화: road_map 17.3, 19번 항목("새 알고리즘 추가 시 변경 범위") 설명이 "새 파일 추가만"으로 강화됨.
 
 ### 23. SmoothQuantModifier 알고리즘 상세
 
@@ -547,7 +547,7 @@ y_new = (gamma/s) * x_hat + (beta/s) = y / s    ← 둘 다 나눠야 등가
 - `scheme`(수치 포맷, SCHEME_REGISTRY)과 `recipe`(알고리즘 파이프라인, RECIPE_REGISTRY)를 별도 레지스트리로 분리 — 책임 분리 유지.
 - 현재 recipe: `w8a8_smoothquant` 1개. 알고리즘이 늘면 항목 추가.
 
-**근거**: 면접 질문 "SmoothQuant 도입으로 Quark식 preset 장점이 사라졌나"의 답 — 사라진 게 아니라 확장 안 했던 갭이고 레지스트리 하나로 메워진다. composition을 택해도 declarative preset과 양립한다는 걸 코드로 입증.
+**근거**: 설계 검토 포인트 "SmoothQuant 도입으로 Quark식 preset 장점이 사라졌나"의 답 — 사라진 게 아니라 확장 안 했던 갭이고 레지스트리 하나로 메워진다. composition을 택해도 declarative preset과 양립한다는 걸 코드로 입증.
 
 ### 28. from_scheme 제거 — preset 진입점을 from_recipe 하나로 통일
 
@@ -773,7 +773,7 @@ layer별 원래 device는 `layer_devices`에 기록해 복귀. scale buffer도 `
 - M6-C Sequential Calibration 구현 완료.
 - M6-B AWQ 구현 완료.
 - 코드 품질 개선 (GPT 리뷰 반영) 완료.
-- 발표자료(slides.md, script.md) 최신화 완료.
+- 설계 문서(slides.md, script.md) 최신화 완료.
 - 단위 테스트 49개 통과.
 
 ### 다음 작업

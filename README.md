@@ -118,7 +118,8 @@ compressor.save(model, "./qwen3-w8a8", tokenizer=tokenizer)
 ### W8A8 + SmoothQuant (per-token dynamic)
 
 ```python
-# SmoothQuant weight 변환은 calibration data 필요, activation은 dynamic이므로 불필요
+# SmoothQuant 통계 수집에는 calibration data가 필요합니다.
+# 최종 activation scale은 per-token dynamic으로 runtime에 계산됩니다.
 compressor = Compressor.from_recipe("w8a8_smoothquant", ignore=["lm_head"])
 compressor.compress(model, dataloader=calib_inputs)
 ```
@@ -153,7 +154,7 @@ model = load_pretrained("./qwen3-w8a8")
 ### HuggingFace Hub 업로드
 
 ```bash
-pip install "mini-compressor[hub]"
+pip install -e ".[hub]"
 ```
 
 ```python
@@ -371,7 +372,7 @@ save_dir/
 
 ### Round-trip 일치 확인 (Qwen3-0.6B)
 
-`compress → save → load → generate` 동일 출력 확인 (W4A16, W8A8).
+`eval.py --save` 경로에서 `compress → save → load → generate` 동일 출력 확인 (W4A16, W8A8).
 
 ### Multi-model 검증 — TinyLlama-1.1B (LLaMA 아키텍처)
 
@@ -428,7 +429,7 @@ uv run --extra dev python -m pytest tests/ -q
 | `test_smoothquant.py` | SmoothQuant pair 탐색, 등가 변환 |
 | `test_gptq.py` | GPTQ scale shape, on-grid weight, RTN 대비 MSE |
 | `test_awq.py` | AWQ-style scaling interface, 등가 변환 |
-| `test_serialize.py` | config round-trip, artifact 생성 |
+| `test_serialize.py` | scheme/config round-trip, artifact 생성 |
 | `test_compressor.py` | recipe API, one-click workflow |
 | `test_sequential_calib.py` | sequential calibration |
 | `test_observer_sync.py` | 2-process gloo observer sync |
@@ -442,7 +443,7 @@ uv run --extra dev python -m pytest tests/ -q
 | Real INT packing | 미구현. fake quant only |
 | 실제 latency / memory benchmark | 미측정 |
 | Float8 execution | 의도된 동작을 명세한 stub |
-| Hub upload helper | 구현 완료 (`save_to_hub`, `pip install mini-compressor[hub]`) |
+| Hub upload helper | 구현 완료 (`save_to_hub`, `pip install -e ".[hub]"`) |
 | Tensor Parallelism | 범위 외 |
 | 실제 2-GPU `device_map="auto"` 실행 | 하드웨어 한계로 미측정 |
 
